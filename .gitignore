@@ -1,0 +1,56 @@
+# ---- Secrets / local env ----
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# ---- Logs ----
+*.log
+logs/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Go ----
+/main
+*.exe
+*.test
+*.out
+coverage.out
+bin/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# ---- ML artifacts ----
+web_app/backend/models/*.pt
+web_app/backend/models/*_meta.json
+
+# ---- Frontend (Node/Vite) ----
+web_app/frontend/node_modules/
+web_app/frontend/dist/
+web_app/frontend/.vite/
+
+# ---- Docker ----
+docker-compose.override.yml
+
+# ---- Build cache / temp ----
+tmp/
+temp/
+*.tmp

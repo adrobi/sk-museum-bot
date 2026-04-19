@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+*.md
+*.exe
+*.log
+web_app/frontend/node_modules
+web_app/frontend/dist
+web_app/backend/__pycache__
+web_app/backend/models/*.pt
+.vscode
+.idea

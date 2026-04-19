@@ -1,0 +1,23 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+
+RUN npm config set registry ${NPM_REGISTRY} && \
+    npm config set fetch-retry-mintimeout 20000 && \
+    npm config set fetch-retry-maxtimeout 120000 && \
+    npm config set fetch-timeout 300000 && \
+    npm config set prefer-offline false
+
+# Копирование package.json и установка зависимостей
+COPY package.json package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps --no-audit --no-fund --progress=false
+
+# Не копируем исходники — они монтируются через volume
+# Для hot reload
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

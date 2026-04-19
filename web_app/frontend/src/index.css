@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-stone-950 text-stone-100 antialiased;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply px-4 py-2 bg-museum-500 hover:bg-museum-400 text-white rounded-xl font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply px-4 py-2 bg-stone-700 hover:bg-stone-600 text-stone-100 rounded-xl font-medium transition-colors;
+  }
+  .card {
+    @apply bg-stone-900 rounded-2xl border border-stone-800;
+  }
+}

@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: museum_db
+    restart: always
+    environment:
+      POSTGRES_USER: museum_user
+      POSTGRES_PASSWORD: museum_password
+      POSTGRES_DB: museum_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Автоматическое создание таблиц при первом запуске
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U museum_user -d museum_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  app:
+    build: .
+    container_name: museum_bot
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env
+    environment:
+      # Внутри сети Docker обращаемся к базе по имени сервиса 'db'
+      DATABASE_URL: postgres://museum_user:museum_password@db:5432/museum_db?sslmode=disable
+
+  web_backend:
+    build: ./web_app/backend
+    container_name: museum_web_backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./web_app/backend/models:/app/models
+    environment:
+      DATABASE_URL: postgres://museum_user:museum_password@db:5432/museum_db?sslmode=disable
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  web_frontend:
+    build:
+      context: ./web_app/frontend
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org/}
+    container_name: museum_web_frontend
+    restart: always
+    depends_on:
+      web_backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  postgres_data:
