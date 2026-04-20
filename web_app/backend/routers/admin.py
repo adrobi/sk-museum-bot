@@ -121,6 +121,22 @@ async def _get_staff_row(email: str | None = None, identifier: str | None = None
     return row
 
 
+async def _get_browser_staff_row(email: str | None, identifier: str | None):
+    normalized_email = (email or "").strip()
+    normalized_identifier = (identifier or "").strip()
+
+    if not normalized_email or not normalized_identifier:
+        raise HTTPException(status_code=400, detail="Укажите email и MAX ID")
+    if not normalized_identifier.isdigit():
+        raise HTTPException(status_code=400, detail="MAX ID должен содержать только цифры")
+
+    row = await _get_staff_row(user_id=int(normalized_identifier))
+    if (row["email"] or "").strip().lower() != normalized_email.lower():
+        raise HTTPException(status_code=403, detail="Email не соответствует указанному MAX ID")
+
+    return row
+
+
 def _validate_max_init_data(init_data: str) -> dict:
     bot_token = os.getenv("BOT_TOKEN", "").strip()
     if not bot_token:
@@ -219,7 +235,7 @@ async def admin_login(req: LoginRequest):
         result["auth_source"] = "max"
         return result
 
-    row = await _get_staff_row(email=req.email, identifier=req.identifier, user_id=req.user_id)
+    row = await _get_browser_staff_row(req.email, req.identifier)
     result = await _issue_login_code(row)
     result["auth_source"] = "browser"
     return result
@@ -227,7 +243,10 @@ async def admin_login(req: LoginRequest):
 
 @router.post("/verify")
 async def admin_verify(req: VerifyRequest):
-    row = await _get_staff_row(email=req.email, identifier=req.identifier, user_id=req.user_id)
+    if req.user_id is not None:
+        row = await _get_staff_row(user_id=req.user_id)
+    else:
+        row = await _get_browser_staff_row(req.email, req.identifier)
     row = await database.fetch_one(
         "SELECT user_id, email, role, current_otp, otp_expires_at FROM staff WHERE user_id=:user_id",
         {"user_id": row["user_id"]},

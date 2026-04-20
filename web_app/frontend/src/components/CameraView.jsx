@@ -6,6 +6,7 @@ export default function CameraView({ museum, onResults, bridge }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
+  const fileInputRef = useRef(null);
   const [camError, setCamError] = useState("");
   const [identifying, setIdentifying] = useState(false);
   const [hint, setHint] = useState("");
@@ -123,6 +124,24 @@ export default function CameraView({ museum, onResults, bridge }) {
     syncVideoDevices();
   }, [syncVideoDevices]);
 
+  async function identifyFromBlob(blob) {
+    if (!blob) return;
+    setIdentifying(true);
+    setHint("");
+    try {
+      const data = await identifyExhibit(museum.id, blob);
+      onResults(data);
+    } catch (e) {
+      if (e.message.includes("Модель")) {
+        setHint("Модель для этого музея ещё не обучена. Обратитесь к администратору.");
+      } else {
+        setHint(`Ошибка: ${e.message}`);
+      }
+    } finally {
+      setIdentifying(false);
+    }
+  }
+
   async function handleCapture() {
     if (!videoRef.current || !canvasRef.current || identifying) return;
     const video = videoRef.current;
@@ -130,26 +149,22 @@ export default function CameraView({ museum, onResults, bridge }) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
-    setIdentifying(true);
-    setHint("");
     canvas.toBlob(
-      async (blob) => {
-        try {
-          const data = await identifyExhibit(museum.id, blob);
-          onResults(data);
-        } catch (e) {
-          if (e.message.includes("Модель")) {
-            setHint("Модель для этого музея ещё не обучена. Обратитесь к администратору.");
-          } else {
-            setHint(`Ошибка: ${e.message}`);
-          }
-        } finally {
-          setIdentifying(false);
-        }
-      },
+      identifyFromBlob,
       "image/jpeg",
       0.9
     );
+  }
+
+  function openSystemCamera() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileChange(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await identifyFromBlob(file);
+    e.target.value = "";
   }
 
   function toggleCamera() {
@@ -171,9 +186,14 @@ export default function CameraView({ museum, onResults, bridge }) {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-center p-6">
             <AlertCircle size={48} className="text-red-400" />
             <p className="text-red-300 text-sm">{camError}</p>
-            <button onClick={startCamera} className="btn-secondary text-sm">
-              Повторить
-            </button>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button onClick={startCamera} className="btn-secondary text-sm">
+                Повторить
+              </button>
+              <button onClick={openSystemCamera} className="btn-secondary text-sm">
+                Открыть камеру телефона
+              </button>
+            </div>
           </div>
         ) : (
           <>
@@ -225,6 +245,15 @@ export default function CameraView({ museum, onResults, bridge }) {
           Наведите камеру на экспонат и нажмите кнопку
         </p>
 
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={handleFileChange}
+        />
+
         <div className="flex gap-3 items-center justify-center">
           {/* Toggle camera button */}
           <button
@@ -249,7 +278,13 @@ export default function CameraView({ museum, onResults, bridge }) {
           </button>
 
           {/* Placeholder for symmetry */}
-          <div className="w-10 h-10" />
+          <button
+            onClick={openSystemCamera}
+            className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
+            title="Сделать снимок через телефон"
+          >
+            <Camera size={18} />
+          </button>
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 # SK Museum Bot
 
-Max-бот и веб-приложение для музеев Ставропольского края: каталог, геолокация, поиск, распознавание экспонатов по фото (EfficientNetB0).
+MAX-бот и веб-приложение для музеев Ставропольского края: каталог, геолокация, поиск, распознавание экспонатов по фото (EfficientNetB0). Веб-приложение работает и как обычный сайт, и как mini-app внутри MAX через MAX Bridge.
 
 ## Возможности
 
@@ -8,11 +8,14 @@ Max-бот и веб-приложение для музеев Ставропол
 - Каталог 47 музеев с поиском, пагинацией и геолокацией
 - Интерактивная Яндекс Карта с музеями
 - Страница музея с описанием, контактами и списком выставок
-- Распознавание экспонатов по фото с камеры (компьютерное зрение)
+- Открытие музея из бота сразу внутри MAX mini-app через `open_app` и `start_param`
+- Распознавание экспонатов по фото с камеры, включая fallback на системную камеру телефона
 - Мероприятия с записью, отзывы и оценки
 
 **Для сотрудников:**
 - 2FA через email, RBAC (4 роли)
+- Вход в админку в браузере по `email + MAX ID + OTP`
+- Вход в админку в MAX mini-app по валидированному `initData + OTP`
 - Веб-панель администратора: управление экспонатами, загрузка фото, обучение моделей
 - Аналитика посещаемости и поисковых запросов
 
@@ -46,11 +49,21 @@ cp .env.example .env
 # Отредактируйте .env — укажите реальные значения
 ```
 
-### 2. Yandex Maps API Key
+### 2. Настройка переменных окружения
+
+Минимально заполните в `.env`:
+
+- `BOT_TOKEN` — используется и ботом, и backend веб-приложения для валидации `window.WebApp.initData`
+- `SMTP_USER`, `SMTP_PASS`, `SMTP_HOST`, `SMTP_PORT` — отправка OTP-кодов сотрудникам
+- `WEB_APP_URL` — публичный `https://` URL веб-приложения для кнопок mini-app в MAX
+
+Если `WEB_APP_URL` пустой, локальный или не `https`, бот не будет добавлять кнопки mini-app в меню.
+
+### 3. Yandex Maps API Key
 
 Получите бесплатный ключ на [developer.tech.yandex.ru](https://developer.tech.yandex.ru/) и вставьте в `web_app/frontend/index.html` вместо `YOUR_YANDEX_MAPS_API_KEY`.
 
-### 3. Запуск через Docker
+### 4. Запуск через Docker
 
 ```bash
 docker-compose up --build -d
@@ -63,6 +76,25 @@ docker-compose up --build -d
 - **PostgreSQL** — localhost:5432
 
 БД инициализируется автоматически из `init.sql` при первом запуске.
+
+## MAX mini-app
+
+- Бот открывает веб-приложение через `open_app`, а `museum_id` передаётся через `payload/start_param`
+- Для прямого открытия в браузере по-прежнему поддерживается fallback `?museum_id=<id>`
+- `WEB_APP_URL` должен быть публичным `https://` адресом и mini-app должен быть привязан к этому же боту в MAX
+- Backend веб-приложения проверяет `initData` по `BOT_TOKEN`, поэтому токен должен совпадать с токеном бота
+
+Для локального тестирования с телефона:
+
+```bash
+# если фронтенд запущен через Docker на 8080
+ngrok http 8080
+
+# если фронтенд запущен через Vite на 5173
+ngrok http 5173
+```
+
+Скопируйте выданный `https://...` URL в `.env` → `WEB_APP_URL` и перезапустите бота.
 
 ## Структура проекта
 
@@ -95,13 +127,15 @@ sk-museum-bot/
         └── src/
             ├── App.jsx
             ├── api.js
+            ├── hooks/
+            │   └── useMaxBridge.js
             └── components/
-                ├── MuseumSelect.jsx  # Список музеев + геолокация
-                ├── MuseumMap.jsx     # Яндекс Карта с музеями
-                ├── MuseumDetail.jsx  # Страница музея (инфо, выставки)
-                ├── CameraView.jsx   # Камера + распознавание
-                ├── ExhibitResult.jsx # Результат распознавания
-                └── AdminPanel.jsx   # Панель администратора
+                ├── MuseumSelect.jsx   # Список музеев + геолокация
+                ├── MuseumMap.jsx      # Яндекс Карта с музеями
+                ├── MuseumDetail.jsx   # Страница музея (инфо, выставки)
+                ├── CameraView.jsx     # Камера + распознавание
+                ├── ExhibitResult.jsx  # Результат распознавания
+                └── AdminPanel.jsx     # Панель администратора
 ```
 
 ## База данных
@@ -125,6 +159,9 @@ sk-museum-bot/
 | GET | `/api/museums/{id}/model-status` | Статус ML-модели |
 | POST | `/api/recognition/identify` | Распознать экспонат (multipart) |
 | POST | `/api/recognition/train/{id}` | Запустить обучение модели |
+| POST | `/api/admin/login` | Отправить OTP для входа в админку |
+| POST | `/api/admin/verify` | Подтвердить OTP и получить сессию |
+| GET | `/api/admin/museums` | Получить музеи, доступные сотруднику |
 
 ## Локальная разработка
 
@@ -143,12 +180,17 @@ npm install
 npm run dev
 ```
 
-Для доступа из Max (мобильный):
+Для доступа из MAX на телефоне:
 
 ```bash
+# Vite dev server
 ngrok http 5173
-# Скопируйте HTTPS URL → .env → WEB_APP_URL
+
+# или Docker frontend
+ngrok http 8080
 ```
+
+Скопируйте HTTPS URL → `.env` → `WEB_APP_URL`.
 
 ## Переменные окружения
 
@@ -157,6 +199,7 @@ ngrok http 5173
 | Переменная | Описание |
 |------------|----------|
 | `DATABASE_URL` | PostgreSQL connection string |
-| `BOT_TOKEN` | Токен Max Bot |
+| `BOT_TOKEN` | Токен MAX Bot, также используется backend для валидации `initData` |
 | `SMTP_USER`, `SMTP_PASS` | Email для 2FA |
+| `WEB_APP_URL` | Публичный `https://` URL mini-app для кнопок бота |
 | `YANDEX_MAPS_API_KEY` | Ключ Яндекс Карт |

@@ -16,7 +16,8 @@ const ROLE_KEY    = "museum_admin_role";
 
 export default function AdminPanel({ onBack, bridge }) {
   const [phase, setPhase] = useState("login");
-  const [identifier, setIdentifier] = useState("");
+  const [email, setEmail] = useState("");
+  const [maxId, setMaxId] = useState("");
   const [code, setCode]   = useState("");
   const [token, setToken] = useState(() => sessionStorage.getItem(SESSION_KEY) || "");
   const [role, setRole]   = useState(() => sessionStorage.getItem(ROLE_KEY) || "");
@@ -56,7 +57,7 @@ export default function AdminPanel({ onBack, bridge }) {
 
   useEffect(() => {
     if (token) return;
-    if (!bridge?.isMiniApp || !bridge?.raw?.initData || phase !== "login") return;
+    if (!bridge?.isMiniApp || !bridge?.initData || phase !== "login") return;
 
     let cancelled = false;
     async function startMaxLogin() {
@@ -64,7 +65,7 @@ export default function AdminPanel({ onBack, bridge }) {
       setError("");
       setInfo("Проверяем MAX-профиль и отправляем код на почту...");
       try {
-        const data = await adminLogin({ maxInitData: bridge.raw.initData });
+        const data = await adminLogin({ maxInitData: bridge.initData });
         if (cancelled) return;
         setLoginContext({ email: data.email, userId: data.user_id, authSource: data.auth_source });
         setInfo(`Код отправлен на ${data.masked_email}`);
@@ -185,8 +186,13 @@ export default function AdminPanel({ onBack, bridge }) {
   async function handleSendCode(e) {
     e.preventDefault(); setLoading(true); setError("");
     try {
-      const data = await adminLogin({ identifier });
-      setLoginContext({ email: data.email, userId: data.user_id, identifier, authSource: data.auth_source });
+      const normalizedEmail = email.trim();
+      const normalizedMaxId = maxId.trim();
+      if (!normalizedEmail || !normalizedMaxId) {
+        throw new Error("Укажите email и MAX ID");
+      }
+      const data = await adminLogin({ email: normalizedEmail, identifier: normalizedMaxId });
+      setLoginContext({ email: normalizedEmail, userId: data.user_id, identifier: normalizedMaxId, authSource: data.auth_source });
       setInfo(`Код отправлен на ${data.masked_email}`);
       setPhase("otp");
     }
@@ -226,15 +232,21 @@ export default function AdminPanel({ onBack, bridge }) {
         <p className="text-stone-500 text-sm">
           {bridge?.isMiniApp
             ? "Если ваш MAX ID есть в staff, код придёт на привязанную почту"
-            : "Введите рабочий email или MAX ID из таблицы staff"}
+            : "В браузере укажите рабочий email и MAX ID из таблицы staff"}
         </p>
       </div>
       {!bridge?.isMiniApp && (
         <form onSubmit={handleSendCode} className="space-y-3">
           <div className="relative">
             <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
-            <input type="text" required value={identifier} onChange={e => setIdentifier(e.target.value)}
-              placeholder="admin@example.com или 111760418"
+            <input type="email" required value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="admin@example.com"
+              className="w-full bg-stone-800 border border-stone-700 rounded-xl pl-9 pr-4 py-2.5 text-sm text-stone-100 placeholder-stone-500 focus:outline-none focus:border-museum-500 transition-colors" />
+          </div>
+          <div className="relative">
+            <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
+            <input type="text" inputMode="numeric" required value={maxId} onChange={e => setMaxId(e.target.value.replace(/\D/g, ""))}
+              placeholder="MAX ID"
               className="w-full bg-stone-800 border border-stone-700 rounded-xl pl-9 pr-4 py-2.5 text-sm text-stone-100 placeholder-stone-500 focus:outline-none focus:border-museum-500 transition-colors" />
           </div>
           {error && <p className="text-red-400 text-sm">{error}</p>}
