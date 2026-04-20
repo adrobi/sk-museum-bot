@@ -74,22 +74,11 @@ export default function MuseumSelect({ onSelect, onOpenMap, bridge }) {
       return;
     }
 
-    if (navigator.permissions?.query) {
-      try {
-        const permission = await navigator.permissions.query({ name: "geolocation" });
-        if (permission.state === "denied") {
-          setError(
-            bridge?.isMiniApp
-              ? "Доступ к геолокации запрещён. Разрешите его в настройках мини-приложения MAX и попробуйте снова"
-              : "Доступ к геолокации запрещён в настройках браузера"
-          );
-          return;
-        }
-      } catch {
-      }
-    }
-
     setGeoLoading(true);
+    const permissionStatePromise = navigator.permissions?.query
+      ? navigator.permissions.query({ name: "geolocation" }).then((permission) => permission.state).catch(() => null)
+      : Promise.resolve(null);
+
     navigator.geolocation.getCurrentPosition(
       async ({ coords }) => {
         try {
@@ -106,13 +95,23 @@ export default function MuseumSelect({ onSelect, onOpenMap, bridge }) {
           setGeoLoading(false);
         }
       },
-      (geoError) => {
+      async (geoError) => {
+        const permissionState = await permissionStatePromise;
+
         if (geoError?.code === 1) {
-          setError(
-            bridge?.isMiniApp
-              ? "MAX не дал доступ к геолокации. Проверьте разрешение для мини-приложения в настройках MAX"
-              : "Нет доступа к геолокации"
-          );
+          if (permissionState === "denied") {
+            setError(
+              bridge?.isMiniApp
+                ? "Доступ к геолокации запрещён. Разрешите его в настройках MAX и в системных настройках телефона для приложения MAX"
+                : "Доступ к геолокации запрещён в настройках браузера"
+            );
+          } else {
+            setError(
+              bridge?.isMiniApp
+                ? "MAX отклонил запрос геолокации. Проверьте разрешения для MAX в настройках телефона и повторите попытку"
+                : "Нет доступа к геолокации"
+            );
+          }
         } else if (geoError?.code === 2) {
           setError("Не удалось определить местоположение. Проверьте GPS/интернет");
         } else if (geoError?.code === 3) {
