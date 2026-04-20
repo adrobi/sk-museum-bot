@@ -10,7 +10,7 @@ function normalizeText(value) {
     .trim();
 }
 
-export default function MuseumSelect({ onSelect, onOpenMap }) {
+export default function MuseumSelect({ onSelect, onOpenMap, bridge }) {
   const [museums, setMuseums] = useState([]);
   const [filtered, setFiltered] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -62,10 +62,33 @@ export default function MuseumSelect({ onSelect, onOpenMap }) {
   }
 
   async function handleGeo() {
+    setError("");
+
+    if (!window.isSecureContext) {
+      setError("Геолокация работает только в защищённом окружении (HTTPS внутри MAX)");
+      return;
+    }
+
     if (!navigator.geolocation) {
       setError("Геолокация не поддерживается");
       return;
     }
+
+    if (navigator.permissions?.query) {
+      try {
+        const permission = await navigator.permissions.query({ name: "geolocation" });
+        if (permission.state === "denied") {
+          setError(
+            bridge?.isMiniApp
+              ? "Доступ к геолокации запрещён. Разрешите его в настройках мини-приложения MAX и попробуйте снова"
+              : "Доступ к геолокации запрещён в настройках браузера"
+          );
+          return;
+        }
+      } catch {
+      }
+    }
+
     setGeoLoading(true);
     navigator.geolocation.getCurrentPosition(
       async ({ coords }) => {
@@ -83,9 +106,26 @@ export default function MuseumSelect({ onSelect, onOpenMap }) {
           setGeoLoading(false);
         }
       },
-      () => {
-        setError("Нет доступа к геолокации");
+      (geoError) => {
+        if (geoError?.code === 1) {
+          setError(
+            bridge?.isMiniApp
+              ? "MAX не дал доступ к геолокации. Проверьте разрешение для мини-приложения в настройках MAX"
+              : "Нет доступа к геолокации"
+          );
+        } else if (geoError?.code === 2) {
+          setError("Не удалось определить местоположение. Проверьте GPS/интернет");
+        } else if (geoError?.code === 3) {
+          setError("Не удалось получить геолокацию вовремя. Повторите попытку");
+        } else {
+          setError("Не удалось получить геолокацию");
+        }
         setGeoLoading(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
       }
     );
   }

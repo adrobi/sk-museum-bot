@@ -199,7 +199,7 @@ export default function App() {
       {/* Main content */}
       <main className="flex-1 overflow-auto">
         {step === "select" && (
-          <MuseumSelect onSelect={handleMuseumSelected} onOpenMap={handleOpenMap} />
+          <MuseumSelect onSelect={handleMuseumSelected} onOpenMap={handleOpenMap} bridge={bridge} />
         )}
         {step === "map" && (
           <MuseumMap

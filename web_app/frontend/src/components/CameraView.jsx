@@ -14,7 +14,6 @@ export default function CameraView({ museum, onResults, bridge }) {
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
-  const [cameraRequested, setCameraRequested] = useState(false);
   const [startingCamera, setStartingCamera] = useState(false);
   const requiresManualStart = bridge?.platform === "ios" || bridge?.platform === "android";
 
@@ -100,7 +99,7 @@ export default function CameraView({ museum, onResults, bridge }) {
           };
           video.addEventListener("loadedmetadata", onLoaded);
         });
-        await videoRef.current.play();
+        await videoRef.current.play().catch(() => {});
       }
       setCameraActive(true);
       await syncVideoDevices();
@@ -132,10 +131,10 @@ export default function CameraView({ museum, onResults, bridge }) {
   }, [bridge, stopCamera]);
 
   useEffect(() => {
-    if (!requiresManualStart || cameraRequested) {
+    if (!requiresManualStart) {
       startCamera();
     }
-  }, [cameraRequested, requiresManualStart, startCamera]);
+  }, [requiresManualStart, startCamera]);
 
   useEffect(() => {
     syncVideoDevices();
@@ -184,8 +183,8 @@ export default function CameraView({ museum, onResults, bridge }) {
     e.target.value = "";
   }
 
-  function handleStartCamera() {
-    setCameraRequested(true);
+  async function handleStartCamera() {
+    await startCamera();
   }
 
   function toggleCamera() {
@@ -299,7 +298,7 @@ export default function CameraView({ museum, onResults, bridge }) {
           {/* Toggle camera button */}
           <button
             onClick={toggleCamera}
-            disabled={!cameraRequested || startingCamera}
+            disabled={!cameraActive || startingCamera}
             className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
             title="Переключить камеру"
           >
