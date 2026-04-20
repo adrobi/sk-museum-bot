@@ -56,18 +56,8 @@ func getPublicWebAppURL() (string, bool) {
 }
 
 func getMuseumWebAppURL(museumId int64) (string, bool) {
-	base, ok := getPublicWebAppURL()
-	if !ok {
-		return "", false
-	}
-	u, err := url.Parse(base)
-	if err != nil {
-		return "", false
-	}
-	q := u.Query()
-	q.Set("museum_id", strconv.FormatInt(museumId, 10))
-	u.RawQuery = q.Encode()
-	return u.String(), true
+	_ = museumId
+	return getPublicWebAppURL()
 }
 
 type UserState struct {

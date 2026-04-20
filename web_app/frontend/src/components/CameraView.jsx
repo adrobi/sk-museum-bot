@@ -13,12 +13,17 @@ export default function CameraView({ museum, onResults, bridge }) {
   const [facingMode, setFacingMode] = useState("environment"); // back camera by default
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [cameraActive, setCameraActive] = useState(false);
+  const [cameraRequested, setCameraRequested] = useState(false);
+  const [startingCamera, setStartingCamera] = useState(false);
+  const requiresManualStart = bridge?.platform === "ios" || bridge?.platform === "android";
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
+    setCameraActive(false);
   }, []);
 
   const syncVideoDevices = useCallback(async () => {
@@ -38,10 +43,13 @@ export default function CameraView({ museum, onResults, bridge }) {
   }, [selectedDeviceId]);
 
   const startCamera = useCallback(async () => {
+    setStartingCamera(true);
     setCamError("");
     setHint("");
+    setCameraActive(false);
     if (!navigator.mediaDevices?.getUserMedia) {
       setCamError("Камера недоступна в этом окружении. Откройте приложение по HTTPS или внутри MAX.");
+      setStartingCamera(false);
       return;
     }
 
@@ -92,8 +100,9 @@ export default function CameraView({ museum, onResults, bridge }) {
           };
           video.addEventListener("loadedmetadata", onLoaded);
         });
-        await videoRef.current.play().catch(() => {});
+        await videoRef.current.play();
       }
+      setCameraActive(true);
       await syncVideoDevices();
     } catch (e) {
       const message = e?.name === "NotAllowedError"
@@ -104,6 +113,9 @@ export default function CameraView({ museum, onResults, bridge }) {
         ? "Камера уже используется другим приложением."
         : "Не удалось запустить камеру. Попробуйте ещё раз.";
       setCamError(message);
+      setCameraActive(false);
+    } finally {
+      setStartingCamera(false);
     }
   }, [facingMode, selectedDeviceId, stopCamera, syncVideoDevices]);
 
@@ -111,14 +123,19 @@ export default function CameraView({ museum, onResults, bridge }) {
     if (bridge?.isMiniApp && bridge?.raw?.requestScreenMaxBrightness) {
       bridge.raw.requestScreenMaxBrightness().catch(() => {});
     }
-    startCamera();
     return () => {
       if (bridge?.isMiniApp && bridge?.raw?.restoreScreenBrightness) {
         bridge.raw.restoreScreenBrightness().catch(() => {});
       }
       stopCamera();
     };
-  }, [bridge, startCamera, stopCamera]);
+  }, [bridge, stopCamera]);
+
+  useEffect(() => {
+    if (!requiresManualStart || cameraRequested) {
+      startCamera();
+    }
+  }, [cameraRequested, requiresManualStart, startCamera]);
 
   useEffect(() => {
     syncVideoDevices();
@@ -167,6 +184,10 @@ export default function CameraView({ museum, onResults, bridge }) {
     e.target.value = "";
   }
 
+  function handleStartCamera() {
+    setCameraRequested(true);
+  }
+
   function toggleCamera() {
     if (videoDevices.length > 1) {
       const currentIndex = videoDevices.findIndex((d) => d.deviceId === selectedDeviceId);
@@ -195,7 +216,7 @@ export default function CameraView({ museum, onResults, bridge }) {
               </button>
             </div>
           </div>
-        ) : (
+        ) : cameraActive ? (
           <>
             <video
               ref={videoRef}
@@ -228,6 +249,26 @@ export default function CameraView({ museum, onResults, bridge }) {
               </div>
             )}
           </>
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-center p-6">
+            {startingCamera ? (
+              <Loader2 size={40} className="animate-spin text-museum-400" />
+            ) : (
+              <Camera size={40} className="text-museum-400" />
+            )}
+            <div className="space-y-2 max-w-xs">
+              <p className="text-stone-200 text-sm">
+                {requiresManualStart
+                  ? "Нажмите кнопку ниже, чтобы MAX запросил доступ к камере."
+                  : "Подготавливаем камеру..."}
+              </p>
+              {requiresManualStart && (
+                <p className="text-stone-500 text-xs">
+                  На телефоне предпросмотр камеры надёжнее запускается после явного нажатия.
+                </p>
+              )}
+            </div>
+          </div>
         )}
         <canvas ref={canvasRef} className="hidden" />
       </div>
@@ -258,6 +299,7 @@ export default function CameraView({ museum, onResults, bridge }) {
           {/* Toggle camera button */}
           <button
             onClick={toggleCamera}
+            disabled={!cameraRequested || startingCamera}
             className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
             title="Переключить камеру"
           >
@@ -266,11 +308,13 @@ export default function CameraView({ museum, onResults, bridge }) {
 
           {/* Main capture button */}
           <button
-            onClick={handleCapture}
-            disabled={identifying || !!camError}
+            onClick={cameraActive ? handleCapture : handleStartCamera}
+            disabled={identifying || startingCamera || (!!camError && !cameraActive)}
             className="w-16 h-16 rounded-full bg-museum-500 hover:bg-museum-400 disabled:opacity-50 flex items-center justify-center transition-colors shadow-lg shadow-museum-500/30"
           >
-            {identifying ? (
+            {startingCamera ? (
+              <Loader2 size={28} className="animate-spin text-white" />
+            ) : identifying ? (
               <Loader2 size={28} className="animate-spin text-white" />
             ) : (
               <Camera size={28} className="text-white" />
