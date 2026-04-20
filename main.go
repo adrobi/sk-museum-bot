@@ -45,7 +45,7 @@ func getPublicWebAppURL() (string, bool) {
 	if err != nil || u.Host == "" {
 		return "", false
 	}
-	if u.Scheme != "https" && u.Scheme != "http" {
+	if u.Scheme != "https" {
 		return "", false
 	}
 	host := strings.ToLower(u.Hostname())

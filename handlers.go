@@ -451,7 +451,7 @@ func sendMainMenu(ctx context.Context, api *maxbot.Api, chatId int64, cbId strin
 	kb.AddRow().AddMessage("🔍 Поиск музеев")
 	kb.AddRow().AddMessage("📅 Мероприятия")
 	if webURL, ok := getPublicWebAppURL(); ok {
-		kb.AddRow().AddLink("🔬 Интерактивный музей", schemes.POSITIVE, webURL)
+		kb.AddRow().AddOpenApp("🔬 Интерактивный музей", webURL, "", 0)
 	}
 	kb.AddRow().AddMessage("👨‍💻 Вход для сотрудников")
 	answerCb(ctx, api, chatId, cbId, "🏛 Музеи Ставропольского края\n━━━━━━━━━━━━━━━━━━━━\n\nДобро пожаловать! Выберите действие:", kb)
@@ -549,7 +549,7 @@ func showMuseumDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool,
 	}
 	kb.AddRow().AddCallback("⭐ Оценить музей", schemes.DEFAULT, fmt.Sprintf("rate_menu:%d", id))
 	if webUrl, ok := getMuseumWebAppURL(id); ok {
-		kb.AddRow().AddLink("🔬 Интерактивный музей (AI)", schemes.POSITIVE, webUrl)
+		kb.AddRow().AddOpenApp("🔬 Интерактивный музей (AI)", webUrl, strconv.FormatInt(id, 10), 0)
 	}
 	if m.addr != nil {
 		mapUrl := fmt.Sprintf("https://yandex.ru/maps/?text=%s", url.QueryEscape(*m.addr))

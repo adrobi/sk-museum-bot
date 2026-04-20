@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { fetchMuseumDetail, fetchMuseumExhibitions } from "../api";
 
-export default function MuseumDetail({ museum, onStartCamera, onBack }) {
+export default function MuseumDetail({ museum, onStartCamera, onBack, bridge }) {
   const [detail, setDetail] = useState(null);
   const [exhibitions, setExhibitions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -125,6 +125,12 @@ export default function MuseumDetail({ museum, onStartCamera, onBack }) {
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-museum-400 hover:text-museum-300 transition-colors truncate"
+                onClick={(e) => {
+                  if (bridge?.isMiniApp) {
+                    e.preventDefault();
+                    bridge.openLink(info.website.startsWith("http") ? info.website : `http://${info.website}`);
+                  }
+                }}
               >
                 {info.website}
               </a>

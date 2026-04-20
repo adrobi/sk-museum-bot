@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,7 +128,7 @@ func showMuseumManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	// AI / Интерактивный музей
 	kb.AddRow().AddCallback("🤖 Обучить модель AI", schemes.POSITIVE, fmt.Sprintf("adm:train_model:%d", museumId))
 	if webURL, ok := getMuseumWebAppURL(museumId); ok {
-		kb.AddRow().AddLink("🔬 Открыть интерактивный музей", schemes.POSITIVE, webURL)
+		kb.AddRow().AddOpenApp("🔬 Открыть интерактивный музей", webURL, strconv.FormatInt(museumId, 10), 0)
 	} else {
 		kb.AddRow().AddCallback("🔬 Настроить WEB_APP_URL", schemes.DEFAULT, "adm:webapp_help")
 	}

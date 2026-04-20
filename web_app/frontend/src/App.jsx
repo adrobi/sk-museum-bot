@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import MuseumSelect from "./components/MuseumSelect";
 import MuseumMap from "./components/MuseumMap";
 import MuseumDetail from "./components/MuseumDetail";
 import CameraView from "./components/CameraView";
 import ExhibitResult from "./components/ExhibitResult";
 import AdminPanel from "./components/AdminPanel";
+import useMaxBridge from "./hooks/useMaxBridge";
 import { fetchMuseums } from "./api";
 import { Loader2, Settings } from "lucide-react";
 
@@ -14,6 +15,8 @@ export default function App() {
   const [allMuseums, setAllMuseums] = useState([]);
   const [results, setResults] = useState(null);
   const [loadingUrl, setLoadingUrl] = useState(false);
+
+  const bridge = useMaxBridge();
 
   function handleMuseumSelected(m) {
     setMuseum(m);
@@ -54,12 +57,52 @@ export default function App() {
     setStep("select");
   }
 
-  // Чтение museum_id из URL при старте
+  // ─── MAX BackButton management ──────────────────────────────────────
+  const handleBackButtonPress = useCallback(() => {
+    switch (step) {
+      case "detail":
+        handleChangeMuseum();
+        break;
+      case "map":
+        setStep("select");
+        break;
+      case "camera":
+        setStep("detail");
+        break;
+      case "result":
+        handleBackToDetail();
+        break;
+      case "admin":
+        handleAdminBack();
+        break;
+      default:
+        if (bridge.isMiniApp) bridge.close();
+    }
+  }, [step, bridge]);
+
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const museumId = url.searchParams.get("museum_id");
-    if (!museumId) return;
-    const id = parseInt(museumId, 10);
+    if (!bridge.isMiniApp) return;
+
+    if (step === "select") {
+      bridge.hideBackButton();
+    } else {
+      bridge.showBackButton();
+    }
+
+    bridge.onBackButton(handleBackButtonPress);
+    return () => bridge.offBackButton(handleBackButtonPress);
+  }, [step, bridge, handleBackButtonPress]);
+
+  // ─── Чтение museum_id: из MAX start_param или из URL query ──────────
+  useEffect(() => {
+    // Определяем museum_id: приоритет у start_param из MAX Bridge
+    let museumIdStr = bridge.startParam || null;
+    if (!museumIdStr) {
+      const url = new URL(window.location.href);
+      museumIdStr = url.searchParams.get("museum_id");
+    }
+    if (!museumIdStr) return;
+    const id = parseInt(museumIdStr, 10);
     if (!id || isNaN(id)) return;
 
     setLoadingUrl(true);
@@ -73,7 +116,7 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => setLoadingUrl(false));
-  }, []);
+  }, [bridge.startParam]);
 
   if (loadingUrl) {
     return (
@@ -97,6 +140,11 @@ export default function App() {
             <h1 className="font-bold text-museum-400 text-lg leading-tight">
               Интерактивный музей
             </h1>
+            {bridge.isMiniApp && bridge.user && !museum && (
+              <p className="text-stone-500 text-xs truncate">
+                {bridge.user.first_name || bridge.user.username || ""}
+              </p>
+            )}
             {museum && (
               <p className="text-stone-400 text-sm truncate">{museum.name || museum.display_name}</p>
             )}
@@ -165,10 +213,11 @@ export default function App() {
             museum={museum}
             onStartCamera={handleStartCamera}
             onBack={handleChangeMuseum}
+            bridge={bridge}
           />
         )}
         {step === "camera" && museum && (
-          <CameraView museum={museum} onResults={handleResults} />
+          <CameraView museum={museum} onResults={handleResults} bridge={bridge} />
         )}
         {step === "result" && results && (
           <ExhibitResult
@@ -179,7 +228,7 @@ export default function App() {
           />
         )}
         {step === "admin" && (
-          <AdminPanel onBack={handleAdminBack} />
+          <AdminPanel onBack={handleAdminBack} bridge={bridge} />
         )}
       </main>
     </div>

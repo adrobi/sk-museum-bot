@@ -3,11 +3,15 @@ import random
 import secrets
 import smtplib
 import logging
+import hashlib
+import hmac
+import json
 import uuid
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import List
+from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, UploadFile, File
 from fastapi.responses import FileResponse
@@ -26,15 +30,21 @@ router = APIRouter()
 security = HTTPBearer(auto_error=False)
 
 _sessions: dict[str, dict] = {}
+_ALLOWED_ADMIN_ROLES = ("bot_admin", "museum_admin")
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: str | None = None
+    identifier: str | None = None
+    user_id: int | None = None
+    max_init_data: str | None = None
 
 
 class VerifyRequest(BaseModel):
-    email: str
     code: str
+    email: str | None = None
+    identifier: str | None = None
+    user_id: int | None = None
 
 
 def _send_otp_email(to: str, code: str):
@@ -65,6 +75,129 @@ def _send_otp_email(to: str, code: str):
         logging.error("SMTP ошибка: %s", exc)
 
 
+def _mask_email(email: str) -> str:
+    if "@" not in email:
+        return email
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked_local = local[:1] + "*" * max(len(local) - 1, 1)
+    else:
+        masked_local = local[:2] + "*" * max(len(local) - 2, 1)
+    return f"{masked_local}@{domain}"
+
+
+def _normalize_lookup(email: str | None = None, identifier: str | None = None, user_id: int | None = None) -> tuple[str, dict]:
+    if user_id is not None:
+        return (
+            "SELECT user_id, email, role, is_active FROM staff WHERE user_id=:user_id",
+            {"user_id": int(user_id)},
+        )
+
+    raw = (identifier or email or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Укажите рабочий email или MAX ID")
+
+    if raw.isdigit():
+        return (
+            "SELECT user_id, email, role, is_active FROM staff WHERE user_id=:user_id",
+            {"user_id": int(raw)},
+        )
+
+    return (
+        "SELECT user_id, email, role, is_active FROM staff WHERE LOWER(email)=LOWER(:email)",
+        {"email": raw},
+    )
+
+
+async def _get_staff_row(email: str | None = None, identifier: str | None = None, user_id: int | None = None):
+    query, params = _normalize_lookup(email=email, identifier=identifier, user_id=user_id)
+    row = await database.fetch_one(query, params)
+    if not row:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден в системе")
+    if not row["is_active"]:
+        raise HTTPException(status_code=403, detail="Сотрудник деактивирован")
+    if row["role"] not in _ALLOWED_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Недостаточно прав для доступа")
+    return row
+
+
+def _validate_max_init_data(init_data: str) -> dict:
+    bot_token = os.getenv("BOT_TOKEN", "").strip()
+    if not bot_token:
+        raise HTTPException(status_code=500, detail="BOT_TOKEN не настроен")
+
+    raw_pairs = []
+    for chunk in init_data.split("&"):
+        if "=" in chunk:
+            key, value = chunk.split("=", 1)
+        else:
+            key, value = chunk, ""
+        raw_pairs.append((key, value))
+
+    hash_values = [value for key, value in raw_pairs if key == "hash"]
+    if len(hash_values) != 1:
+        raise HTTPException(status_code=400, detail="Некорректные MAX initData")
+
+    received_hash = hash_values[0]
+    payload_pairs = [(key, unquote(value)) for key, value in raw_pairs if key != "hash"]
+    payload_pairs.sort(key=lambda item: item[0])
+    data_check_string = "\n".join(f"{key}={value}" for key, value in payload_pairs)
+
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        raise HTTPException(status_code=401, detail="MAX initData не прошли проверку")
+
+    payload = dict(payload_pairs)
+    user_raw = payload.get("user")
+    if not user_raw:
+        raise HTTPException(status_code=400, detail="В MAX initData отсутствует пользователь")
+
+    try:
+        user = json.loads(user_raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Не удалось разобрать пользователя MAX") from exc
+
+    user_id = user.get("id")
+    if not isinstance(user_id, int):
+        raise HTTPException(status_code=400, detail="В MAX initData отсутствует user.id")
+
+    return {"user": user, "user_id": user_id, "start_param": payload.get("start_param")}
+
+
+async def _issue_login_code(row) -> dict:
+    code = str(random.randint(100000, 999999))
+    expires_at = datetime.now() + timedelta(minutes=5)
+    await database.execute(
+        "UPDATE staff SET current_otp=:otp, otp_expires_at=:exp WHERE user_id=:user_id",
+        {"otp": code, "exp": expires_at, "user_id": row["user_id"]},
+    )
+    _send_otp_email(row["email"], code)
+    return {
+        "message": f"Код отправлен на {_mask_email(row['email'])}",
+        "email": row["email"],
+        "masked_email": _mask_email(row["email"]),
+        "user_id": row["user_id"],
+        "role": row["role"],
+    }
+
+
+def _create_session(user_id: int, role: str) -> dict:
+    token = secrets.token_urlsafe(32)
+    session = {
+        "token": token,
+        "user_id": user_id,
+        "role": role,
+        "expires_at": datetime.now() + timedelta(hours=24),
+    }
+    _sessions[token] = {
+        "user_id": user_id,
+        "role": role,
+        "expires_at": session["expires_at"],
+    }
+    return session
+
+
 def get_session(creds: HTTPAuthorizationCredentials = Depends(security)) -> dict:
     if not creds:
         raise HTTPException(status_code=401, detail="Требуется авторизация")
@@ -79,30 +212,25 @@ def get_session(creds: HTTPAuthorizationCredentials = Depends(security)) -> dict
 
 @router.post("/login")
 async def admin_login(req: LoginRequest):
-    row = await database.fetch_one(
-        "SELECT user_id, role FROM staff WHERE email=:email AND is_active=true",
-        {"email": req.email},
-    )
-    if not row:
-        raise HTTPException(status_code=404, detail="Email не найден в системе")
-    if row["role"] not in ("bot_admin", "museum_admin"):
-        raise HTTPException(status_code=403, detail="Недостаточно прав для доступа")
+    if req.max_init_data:
+        max_user = _validate_max_init_data(req.max_init_data)
+        row = await _get_staff_row(user_id=max_user["user_id"])
+        result = await _issue_login_code(row)
+        result["auth_source"] = "max"
+        return result
 
-    code = str(random.randint(100000, 999999))
-    expires_at = datetime.now() + timedelta(minutes=5)
-    await database.execute(
-        "UPDATE staff SET current_otp=:otp, otp_expires_at=:exp WHERE email=:email",
-        {"otp": code, "exp": expires_at, "email": req.email},
-    )
-    _send_otp_email(req.email, code)
-    return {"message": "Код отправлен на почту"}
+    row = await _get_staff_row(email=req.email, identifier=req.identifier, user_id=req.user_id)
+    result = await _issue_login_code(row)
+    result["auth_source"] = "browser"
+    return result
 
 
 @router.post("/verify")
 async def admin_verify(req: VerifyRequest):
+    row = await _get_staff_row(email=req.email, identifier=req.identifier, user_id=req.user_id)
     row = await database.fetch_one(
-        "SELECT user_id, role, current_otp, otp_expires_at FROM staff WHERE email=:email",
-        {"email": req.email},
+        "SELECT user_id, email, role, current_otp, otp_expires_at FROM staff WHERE user_id=:user_id",
+        {"user_id": row["user_id"]},
     )
     if not row:
         raise HTTPException(status_code=404, detail="Не найдено")
@@ -112,16 +240,11 @@ async def admin_verify(req: VerifyRequest):
         raise HTTPException(status_code=400, detail="Код истёк")
 
     await database.execute(
-        "UPDATE staff SET current_otp=NULL, last_login=NOW() WHERE email=:email",
-        {"email": req.email},
+        "UPDATE staff SET current_otp=NULL, last_login=NOW() WHERE user_id=:user_id",
+        {"user_id": row["user_id"]},
     )
-    token = secrets.token_urlsafe(32)
-    _sessions[token] = {
-        "user_id": row["user_id"],
-        "role": row["role"],
-        "expires_at": datetime.now() + timedelta(hours=24),
-    }
-    return {"token": token, "role": row["role"]}
+    session = _create_session(row["user_id"], row["role"])
+    return {"token": session["token"], "role": row["role"], "user_id": row["user_id"], "email": row["email"]}
 
 
 @router.get("/museums")

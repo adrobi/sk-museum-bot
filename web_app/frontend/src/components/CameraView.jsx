@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback } from "react";
 import { Camera, Loader2, AlertCircle, ZoomIn } from "lucide-react";
 import { identifyExhibit } from "../api";
 
-export default function CameraView({ museum, onResults }) {
+export default function CameraView({ museum, onResults, bridge }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
@@ -10,32 +10,118 @@ export default function CameraView({ museum, onResults }) {
   const [identifying, setIdentifying] = useState(false);
   const [hint, setHint] = useState("");
   const [facingMode, setFacingMode] = useState("environment"); // back camera by default
+  const [videoDevices, setVideoDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+
+  const stopCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  const syncVideoDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((d) => d.kind === "videoinput");
+      setVideoDevices(cameras);
+      if (!selectedDeviceId && cameras.length > 0) {
+        const preferred = cameras.find((d) => /back|rear|environment|wide/i.test(d.label)) || cameras[0];
+        if (preferred?.deviceId) {
+          setSelectedDeviceId(preferred.deviceId);
+        }
+      }
+    } catch {
+    }
+  }, [selectedDeviceId]);
 
   const startCamera = useCallback(async () => {
     setCamError("");
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+    setHint("");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCamError("Камера недоступна в этом окружении. Откройте приложение по HTTPS или внутри MAX.");
+      return;
     }
+
+    stopCamera();
+
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
+      const attempts = [];
+      if (selectedDeviceId) {
+        attempts.push({ video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      }
+      attempts.push(
+        { video: { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+        { video: { facingMode }, audio: false },
+        { video: true, audio: false }
+      );
+
+      let stream = null;
+      let lastError = null;
+      for (const constraints of attempts) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+
+      if (!stream) {
+        throw lastError || new Error("Не удалось открыть камеру");
+      }
+
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        await new Promise((resolve) => {
+          const video = videoRef.current;
+          if (!video) {
+            resolve();
+            return;
+          }
+          if (video.readyState >= 1) {
+            resolve();
+            return;
+          }
+          const onLoaded = () => {
+            video.removeEventListener("loadedmetadata", onLoaded);
+            resolve();
+          };
+          video.addEventListener("loadedmetadata", onLoaded);
+        });
+        await videoRef.current.play().catch(() => {});
       }
+      await syncVideoDevices();
     } catch (e) {
-      setCamError("Нет доступа к камере. Разрешите использование камеры в браузере.");
+      const message = e?.name === "NotAllowedError"
+        ? "Нет доступа к камере. Разрешите использование камеры в MAX или браузере."
+        : e?.name === "NotFoundError"
+        ? "Камера не найдена на устройстве."
+        : e?.name === "NotReadableError"
+        ? "Камера уже используется другим приложением."
+        : "Не удалось запустить камеру. Попробуйте ещё раз.";
+      setCamError(message);
     }
-  }, [facingMode]);
+  }, [facingMode, selectedDeviceId, stopCamera, syncVideoDevices]);
 
   useEffect(() => {
+    if (bridge?.isMiniApp && bridge?.raw?.requestScreenMaxBrightness) {
+      bridge.raw.requestScreenMaxBrightness().catch(() => {});
+    }
     startCamera();
     return () => {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+      if (bridge?.isMiniApp && bridge?.raw?.restoreScreenBrightness) {
+        bridge.raw.restoreScreenBrightness().catch(() => {});
+      }
+      stopCamera();
     };
-  }, [startCamera]);
+  }, [bridge, startCamera, stopCamera]);
+
+  useEffect(() => {
+    syncVideoDevices();
+  }, [syncVideoDevices]);
 
   async function handleCapture() {
     if (!videoRef.current || !canvasRef.current || identifying) return;
@@ -67,6 +153,13 @@ export default function CameraView({ museum, onResults }) {
   }
 
   function toggleCamera() {
+    if (videoDevices.length > 1) {
+      const currentIndex = videoDevices.findIndex((d) => d.deviceId === selectedDeviceId);
+      const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % videoDevices.length : 0;
+      setSelectedDeviceId(videoDevices[nextIndex]?.deviceId || "");
+      return;
+    }
+    setSelectedDeviceId("");
     setFacingMode((f) => (f === "environment" ? "user" : "environment"));
   }
 

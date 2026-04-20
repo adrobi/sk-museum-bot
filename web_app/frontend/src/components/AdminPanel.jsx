@@ -14,12 +14,13 @@ import {
 const SESSION_KEY = "museum_admin_token";
 const ROLE_KEY    = "museum_admin_role";
 
-export default function AdminPanel({ onBack }) {
+export default function AdminPanel({ onBack, bridge }) {
   const [phase, setPhase] = useState("login");
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [code, setCode]   = useState("");
   const [token, setToken] = useState(() => sessionStorage.getItem(SESSION_KEY) || "");
   const [role, setRole]   = useState(() => sessionStorage.getItem(ROLE_KEY) || "");
+  const [loginContext, setLoginContext] = useState(null);
 
   const [museums, setMuseums]             = useState([]);
   const [statuses, setStatuses]           = useState({});
@@ -52,6 +53,34 @@ export default function AdminPanel({ onBack }) {
   }
 
   useEffect(() => () => stopPolling(), []);
+
+  useEffect(() => {
+    if (token) return;
+    if (!bridge?.isMiniApp || !bridge?.raw?.initData || phase !== "login") return;
+
+    let cancelled = false;
+    async function startMaxLogin() {
+      setLoading(true);
+      setError("");
+      setInfo("Проверяем MAX-профиль и отправляем код на почту...");
+      try {
+        const data = await adminLogin({ maxInitData: bridge.raw.initData });
+        if (cancelled) return;
+        setLoginContext({ email: data.email, userId: data.user_id, authSource: data.auth_source });
+        setInfo(`Код отправлен на ${data.masked_email}`);
+        setPhase("otp");
+      } catch (err) {
+        if (cancelled) return;
+        setInfo("");
+        setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    startMaxLogin();
+    return () => { cancelled = true; };
+  }, [bridge, token, phase]);
 
   // ── load museums ───────────────────────────────────────────────────────────
   const loadMuseums = useCallback(async (tok) => {
@@ -155,7 +184,12 @@ export default function AdminPanel({ onBack }) {
   // ── auth ───────────────────────────────────────────────────────────────────
   async function handleSendCode(e) {
     e.preventDefault(); setLoading(true); setError("");
-    try { await adminLogin(email); setPhase("otp"); }
+    try {
+      const data = await adminLogin({ identifier });
+      setLoginContext({ email: data.email, userId: data.user_id, identifier, authSource: data.auth_source });
+      setInfo(`Код отправлен на ${data.masked_email}`);
+      setPhase("otp");
+    }
     catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }
@@ -163,7 +197,12 @@ export default function AdminPanel({ onBack }) {
   async function handleVerify(e) {
     e.preventDefault(); setLoading(true); setError("");
     try {
-      const data = await adminVerify(email, code);
+      const data = await adminVerify({
+        email: loginContext?.email,
+        identifier: loginContext?.identifier,
+        userId: loginContext?.userId,
+        code,
+      });
       saveSession(data.token, data.role);
       loadMuseums(data.token);
     } catch (err) { setError(err.message); }
@@ -184,22 +223,40 @@ export default function AdminPanel({ onBack }) {
       <div className="text-center space-y-1">
         <div className="text-4xl mb-2">🛡</div>
         <h2 className="text-xl font-bold text-stone-100">Вход для администраторов</h2>
-        <p className="text-stone-500 text-sm">Введите рабочий email для получения кода</p>
+        <p className="text-stone-500 text-sm">
+          {bridge?.isMiniApp
+            ? "Если ваш MAX ID есть в staff, код придёт на привязанную почту"
+            : "Введите рабочий email или MAX ID из таблицы staff"}
+        </p>
       </div>
-      <form onSubmit={handleSendCode} className="space-y-3">
-        <div className="relative">
-          <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
-          <input type="email" required value={email} onChange={e => setEmail(e.target.value)}
-            placeholder="admin@example.com"
-            className="w-full bg-stone-800 border border-stone-700 rounded-xl pl-9 pr-4 py-2.5 text-sm text-stone-100 placeholder-stone-500 focus:outline-none focus:border-museum-500 transition-colors" />
+      {!bridge?.isMiniApp && (
+        <form onSubmit={handleSendCode} className="space-y-3">
+          <div className="relative">
+            <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-500" />
+            <input type="text" required value={identifier} onChange={e => setIdentifier(e.target.value)}
+              placeholder="admin@example.com или 111760418"
+              className="w-full bg-stone-800 border border-stone-700 rounded-xl pl-9 pr-4 py-2.5 text-sm text-stone-100 placeholder-stone-500 focus:outline-none focus:border-museum-500 transition-colors" />
+          </div>
+          {error && <p className="text-red-400 text-sm">{error}</p>}
+          {info && <p className="text-green-400 text-sm">{info}</p>}
+          <button type="submit" disabled={loading}
+            className="btn-primary w-full flex items-center justify-center gap-2">
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <ChevronRight size={16} />}
+            Получить код
+          </button>
+        </form>
+      )}
+      {bridge?.isMiniApp && (
+        <div className="space-y-3">
+          <div className="bg-stone-900/70 border border-stone-800 rounded-xl px-4 py-3 text-sm text-stone-300">
+            <p>MAX пользователь: <span className="text-stone-100">{bridge?.user?.first_name || bridge?.user?.username || bridge?.user?.id}</span></p>
+            <p className="text-stone-500 mt-1">ID: {bridge?.user?.id ?? "—"}</p>
+          </div>
+          {loading && <p className="text-stone-400 text-sm text-center">Отправляем код на почту...</p>}
+          {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+          {info && <p className="text-green-400 text-sm text-center">{info}</p>}
         </div>
-        {error && <p className="text-red-400 text-sm">{error}</p>}
-        <button type="submit" disabled={loading}
-          className="btn-primary w-full flex items-center justify-center gap-2">
-          {loading ? <Loader2 size={16} className="animate-spin" /> : <ChevronRight size={16} />}
-          Получить код
-        </button>
-      </form>
+      )}
       <button onClick={onBack} className="w-full text-sm text-stone-500 hover:text-stone-300 transition-colors">← Назад</button>
     </div>
   );
@@ -209,7 +266,7 @@ export default function AdminPanel({ onBack }) {
       <div className="text-center space-y-1">
         <div className="text-4xl mb-2">📩</div>
         <h2 className="text-xl font-bold text-stone-100">Введите код</h2>
-        <p className="text-stone-500 text-sm">Код отправлен на <span className="text-stone-300">{email}</span></p>
+        <p className="text-stone-500 text-sm">Код отправлен на <span className="text-stone-300">{loginContext?.email || "почту сотрудника"}</span></p>
       </div>
       <form onSubmit={handleVerify} className="space-y-3">
         <div className="relative">
@@ -226,8 +283,8 @@ export default function AdminPanel({ onBack }) {
           Войти
         </button>
       </form>
-      <button onClick={() => { setPhase("login"); setError(""); setCode(""); }}
-        className="w-full text-sm text-stone-500 hover:text-stone-300 transition-colors">← Другой email</button>
+      <button onClick={() => { setPhase("login"); setError(""); setInfo(""); setCode(""); setLoginContext(null); }}
+        className="w-full text-sm text-stone-500 hover:text-stone-300 transition-colors">← Назад</button>
     </div>
   );
 

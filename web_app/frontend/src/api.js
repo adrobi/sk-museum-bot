@@ -2,11 +2,16 @@ const BASE = "/api";
 
 // ── Admin ────────────────────────────────────────────────────────────────────
 
-export async function adminLogin(email) {
+export async function adminLogin({ email, identifier, userId, maxInitData } = {}) {
   const r = await fetch(`${BASE}/admin/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({
+      email,
+      identifier,
+      user_id: userId,
+      max_init_data: maxInitData,
+    }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
@@ -15,11 +20,16 @@ export async function adminLogin(email) {
   return r.json();
 }
 
-export async function adminVerify(email, code) {
+export async function adminVerify({ email, identifier, userId, code }) {
   const r = await fetch(`${BASE}/admin/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, code }),
+    body: JSON.stringify({
+      email,
+      identifier,
+      user_id: userId,
+      code,
+    }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
