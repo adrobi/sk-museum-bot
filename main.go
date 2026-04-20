@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -31,11 +32,42 @@ func getWebAppURL() string {
 	if webAppURL != "" {
 		return webAppURL
 	}
-	webAppURL = os.Getenv("WEB_APP_URL")
-	if webAppURL == "" {
-		webAppURL = "http://localhost:5173" // fallback для локальной разработки
-	}
+	webAppURL = strings.TrimSpace(os.Getenv("WEB_APP_URL"))
 	return webAppURL
+}
+
+func getPublicWebAppURL() (string, bool) {
+	raw := getWebAppURL()
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return "", false
+	}
+	return u.String(), true
+}
+
+func getMuseumWebAppURL(museumId int64) (string, bool) {
+	base, ok := getPublicWebAppURL()
+	if !ok {
+		return "", false
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", false
+	}
+	q := u.Query()
+	q.Set("museum_id", strconv.FormatInt(museumId, 10))
+	u.RawQuery = q.Encode()
+	return u.String(), true
 }
 
 type UserState struct {
@@ -126,6 +158,8 @@ func answerCb(ctx context.Context, api *maxbot.Api, chatId int64, cbId, text str
 		}
 		if _, err := api.Messages.AnswerOnCallback(ctx, cbId, &schemes.CallbackAnswer{Message: body}); err == nil {
 			return
+		} else {
+			log.Printf("answerCb callback error: %v", err)
 		}
 		log.Printf("answerCb fallback: send new msg")
 	}
@@ -133,7 +167,9 @@ func answerCb(ctx context.Context, api *maxbot.Api, chatId int64, cbId, text str
 	if kb != nil {
 		msg.AddKeyboard(kb)
 	}
-	_ = api.Messages.Send(ctx, msg)
+	if err := api.Messages.Send(ctx, msg); err != nil {
+		log.Printf("answerCb send error: %v", err)
+	}
 }
 
 func main() {
@@ -328,7 +364,13 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 			}
 			showAddMuseum(ctx, api, pool, chatId, userId, cbId)
 		case "list_mus":
-			showMuseumManageList(ctx, api, pool, chatId, userId, role, cbId)
+			page := 0
+			if len(parts) >= 3 {
+				if p, err := strconv.Atoi(parts[2]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showMuseumManageList(ctx, api, pool, chatId, userId, role, page, cbId)
 		case "manage_mus":
 			if len(parts) < 3 {
 				return
@@ -367,13 +409,31 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 			setUserState(userId, "awaiting_museum_photo", parts[2])
 			answerCb(ctx, api, chatId, cbId, "📷 Загрузка фото музея\n━━━━━━━━━━━━━━━━━━━━\n\nОтправьте одну фотографию.", photoCancelKeyboard(api))
 		case "add_exh":
-			showAddExhibition(ctx, api, pool, chatId, userId, role, cbId)
+			page := 0
+			if len(parts) >= 3 {
+				if p, err := strconv.Atoi(parts[2]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showAddExhibition(ctx, api, pool, chatId, userId, role, page, cbId)
 		case "manage_exbn":
 			if len(parts) < 3 {
 				return
 			}
 			eid, _ := strconv.ParseInt(parts[2], 10, 64)
 			showExhibitionManage(ctx, api, pool, chatId, userId, role, eid, cbId)
+		case "list_exbn":
+			if len(parts) < 3 {
+				return
+			}
+			museumId, _ := strconv.ParseInt(parts[2], 10, 64)
+			page := 0
+			if len(parts) >= 4 {
+				if p, err := strconv.Atoi(parts[3]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showMuseumExhibitionsList(ctx, api, pool, chatId, userId, role, museumId, page, cbId)
 		case "del_exbn":
 			if len(parts) < 3 {
 				return
@@ -401,22 +461,70 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 			}
 			eid, _ := strconv.ParseInt(parts[2], 10, 64)
 			pool.Exec(ctx, "DELETE FROM exhibits WHERE id=$1", eid)
-			showAdminMenu(ctx, api, chatId, role, cbId)
+			if len(parts) >= 5 {
+				exbnId, _ := strconv.ParseInt(parts[3], 10, 64)
+				page := 0
+				if p, err := strconv.Atoi(parts[4]); err == nil && p >= 0 {
+					page = p
+				}
+				showExhibitManageList(ctx, api, pool, chatId, userId, role, exbnId, page, cbId)
+			} else {
+				showAdminMenu(ctx, api, chatId, role, cbId)
+			}
 		case "set_photo_exbt":
 			if len(parts) < 3 {
 				return
 			}
 			setUserState(userId, "awaiting_exhibit_photo", parts[2])
 			answerCb(ctx, api, chatId, cbId, "📷 Загрузка фото экспоната\n━━━━━━━━━━━━━━━━━━━━\n\nОтправьте одну фотографию.", photoCancelKeyboard(api))
+		case "list_exbt":
+			if len(parts) < 3 {
+				return
+			}
+			exbnId, _ := strconv.ParseInt(parts[2], 10, 64)
+			page := 0
+			if len(parts) >= 4 {
+				if p, err := strconv.Atoi(parts[3]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showExhibitManageList(ctx, api, pool, chatId, userId, role, exbnId, page, cbId)
 		case "add_event":
-			showAddEvent(ctx, api, pool, chatId, userId, role, cbId)
+			page := 0
+			if len(parts) >= 3 {
+				if p, err := strconv.Atoi(parts[2]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showAddEvent(ctx, api, pool, chatId, userId, role, page, cbId)
+		case "list_events":
+			if len(parts) < 3 {
+				return
+			}
+			museumId, _ := strconv.ParseInt(parts[2], 10, 64)
+			page := 0
+			if len(parts) >= 4 {
+				if p, err := strconv.Atoi(parts[3]); err == nil && p >= 0 {
+					page = p
+				}
+			}
+			showMuseumEventsList(ctx, api, pool, chatId, userId, role, museumId, page, cbId)
 		case "del_event":
 			if len(parts) < 3 {
 				return
 			}
 			eid, _ := strconv.ParseInt(parts[2], 10, 64)
 			pool.Exec(ctx, "DELETE FROM events WHERE id=$1", eid)
-			showAdminMenu(ctx, api, chatId, role, cbId)
+			if len(parts) >= 5 {
+				museumId, _ := strconv.ParseInt(parts[3], 10, 64)
+				page := 0
+				if p, err := strconv.Atoi(parts[4]); err == nil && p >= 0 {
+					page = p
+				}
+				showMuseumEventsList(ctx, api, pool, chatId, userId, role, museumId, page, cbId)
+			} else {
+				showAdminMenu(ctx, api, chatId, role, cbId)
+			}
 		case "staff":
 			showStaffManagement(ctx, api, pool, chatId, role, cbId)
 		case "add_staff":
@@ -467,6 +575,11 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 					"cd web_app/backend\n"+
 					"python -m ml.train --museum_id %d\n\n"+
 					"После завершения кнопка 🔬 заработает!", mid, mid), nil)
+		case "webapp_help":
+			answerCb(ctx, api, chatId, cbId,
+				"🔬 Интерактивный музей временно недоступен\n━━━━━━━━━━━━━━━━━━━━\n\n"+
+					"Нужно задать публичный URL в переменной WEB_APP_URL (например, ngrok/production URL).\n"+
+					"URL вида localhost/127.0.0.1 не подходит для кнопок в Max.", nil)
 		default:
 			answerCb(ctx, api, chatId, cbId, "🔧 Функция в разработке.", nil)
 		}

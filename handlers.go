@@ -418,29 +418,29 @@ func showAdminMenu(ctx context.Context, api *maxbot.Api, chatId int64, role, cbI
 	text := "🛡 Панель управления\n━━━━━━━━━━━━━━━━━━━━\n\n👤 " + names[role] + "\n\nВыберите действие:"
 	switch role {
 	case RoleBotAdmin:
-		kb.AddRow().AddCallback("➕ Добавить музей", schemes.POSITIVE, "adm:add_mus")
-		kb.AddRow().AddCallback("🏛 Управление музеями", schemes.DEFAULT, "adm:list_mus")
-		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh")
-		kb.AddRow().AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
+		kb.AddRow().AddCallback("➕ Добавить музей", schemes.POSITIVE, "adm:add_mus").
+			AddCallback("🏛 Управление музеями", schemes.DEFAULT, "adm:list_mus")
+		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh").
+			AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
 		kb.AddRow().AddCallback("👥 Управление персоналом", schemes.DEFAULT, "adm:staff")
-		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics")
-		kb.AddRow().AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
+		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics").
+			AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
 	case RoleMuseumAdmin:
 		kb.AddRow().AddCallback("🏛 Мои музеи", schemes.DEFAULT, "adm:list_mus")
-		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh")
-		kb.AddRow().AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
-		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics")
-		kb.AddRow().AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
+		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh").
+			AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
+		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics").
+			AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
 	case RoleContentManager:
 		kb.AddRow().AddCallback("🏛 Мои музеи", schemes.DEFAULT, "adm:list_mus")
-		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh")
-		kb.AddRow().AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
+		kb.AddRow().AddCallback("🎨 Добавить выставку", schemes.POSITIVE, "adm:add_exh").
+			AddCallback("📅 Добавить мероприятие", schemes.POSITIVE, "adm:add_event")
 	case RoleAnalyst:
-		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics")
-		kb.AddRow().AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
+		kb.AddRow().AddCallback("📊 Аналитика", schemes.DEFAULT, "adm:analytics").
+			AddCallback("💬 Отзывы", schemes.DEFAULT, "adm:reviews")
 	}
-	kb.AddRow().AddCallback("🚪 Выйти", schemes.NEGATIVE, "adm:logout")
-	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
+	kb.AddRow().AddCallback("🚪 Выйти", schemes.NEGATIVE, "adm:logout").
+		AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
 	answerCb(ctx, api, chatId, cbId, text, kb)
 }
 
@@ -450,7 +450,9 @@ func sendMainMenu(ctx context.Context, api *maxbot.Api, chatId int64, cbId strin
 	kb.AddRow().AddMessage("📍 Ближайшие")
 	kb.AddRow().AddMessage("🔍 Поиск музеев")
 	kb.AddRow().AddMessage("📅 Мероприятия")
-	kb.AddRow().AddLink("🔬 Интерактивный музей", schemes.POSITIVE, getWebAppURL())
+	if webURL, ok := getPublicWebAppURL(); ok {
+		kb.AddRow().AddLink("🔬 Интерактивный музей", schemes.POSITIVE, webURL)
+	}
 	kb.AddRow().AddMessage("👨‍💻 Вход для сотрудников")
 	answerCb(ctx, api, chatId, cbId, "🏛 Музеи Ставропольского края\n━━━━━━━━━━━━━━━━━━━━\n\nДобро пожаловать! Выберите действие:", kb)
 }
@@ -546,8 +548,9 @@ func showMuseumDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool,
 		exRows.Close()
 	}
 	kb.AddRow().AddCallback("⭐ Оценить музей", schemes.DEFAULT, fmt.Sprintf("rate_menu:%d", id))
-	webUrl := fmt.Sprintf("%s/?museum_id=%d", getWebAppURL(), id)
-	kb.AddRow().AddLink("🔬 Интерактивный музей (AI)", schemes.POSITIVE, webUrl)
+	if webUrl, ok := getMuseumWebAppURL(id); ok {
+		kb.AddRow().AddLink("🔬 Интерактивный музей (AI)", schemes.POSITIVE, webUrl)
+	}
 	if m.addr != nil {
 		mapUrl := fmt.Sprintf("https://yandex.ru/maps/?text=%s", url.QueryEscape(*m.addr))
 		kb.AddRow().AddLink("🗺 Построить маршрут", schemes.POSITIVE, mapUrl)

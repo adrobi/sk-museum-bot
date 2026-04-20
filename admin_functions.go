@@ -19,41 +19,92 @@ func showAddMuseum(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, cha
 		"➕ Добавление музея\n━━━━━━━━━━━━━━━━━━━━\nОтправьте данные:\n\nНазвание\nКраткое название\nОписание\nАдрес\nТелефон\nEmail\nСайт\nЧасы работы", kb)
 }
 
-func showMuseumManageList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role, cbId string) {
-	var rows interface{ Next() bool }
-	var err error
-	if role == RoleBotAdmin {
-		r, e := pool.Query(ctx, "SELECT id, COALESCE(NULLIF(short_name,''), name) FROM museums ORDER BY name")
-		rows, err = r, e
-	} else {
-		r, e := pool.Query(ctx,
-			"SELECT m.id, COALESCE(NULLIF(m.short_name,''), m.name) FROM museums m JOIN staff s ON m.id=s.museum_id WHERE s.user_id=$1 ORDER BY m.name", userId)
-		rows, err = r, e
+type museumListItem struct {
+	id   int64
+	name string
+}
+
+func loadMuseumsPage(ctx context.Context, pool *pgxpool.Pool, userId int64, role string, page, pageSize int) ([]museumListItem, bool, error) {
+	if page < 0 {
+		page = 0
 	}
+	offset := page * pageSize
+	limit := pageSize + 1
+
+	var (
+		rows pgxRows
+		err  error
+	)
+	if role == RoleBotAdmin {
+		rows, err = pool.Query(ctx,
+			"SELECT id, COALESCE(NULLIF(short_name,''), name) FROM museums ORDER BY name LIMIT $1 OFFSET $2",
+			limit, offset,
+		)
+	} else {
+		rows, err = pool.Query(ctx,
+			"SELECT m.id, COALESCE(NULLIF(m.short_name,''), m.name) FROM museums m JOIN staff s ON m.id=s.museum_id WHERE s.user_id=$1 ORDER BY m.name LIMIT $2 OFFSET $3",
+			userId, limit, offset,
+		)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	items := make([]museumListItem, 0, pageSize+1)
+	for rows.Next() {
+		var item museumListItem
+		if rows.Scan(&item.id, &item.name) == nil {
+			items = append(items, item)
+		}
+	}
+	hasNext := len(items) > pageSize
+	if hasNext {
+		items = items[:pageSize]
+	}
+	return items, hasNext, nil
+}
+
+type pgxRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Close()
+}
+
+func showMuseumManageList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, page int, cbId string) {
+	const pageSize = 6
+	items, hasNext, err := loadMuseumsPage(ctx, pool, userId, role, page, pageSize)
 	if err != nil {
 		answerCb(ctx, api, chatId, cbId, "❌ Ошибка загрузки.", nil)
 		return
 	}
-	type scannable interface{ Scan(dest ...any) error }
+
 	kb := api.Messages.NewKeyboardBuilder()
-	count := 0
-	for rows.Next() {
-		var id int64
-		var name string
-		if rows.(scannable).Scan(&id, &name) == nil {
-			kb.AddRow().AddCallback(name, schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", id))
-			count++
+	for _, item := range items {
+		kb.AddRow().AddCallback(item.name, schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", item.id))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:list_mus:%d", page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:list_mus:%d", page+1))
 		}
 	}
-	if closer, ok := rows.(interface{ Close() }); ok {
-		closer.Close()
-	}
+
 	kb.AddRow().AddCallback("🛡 Панель управления", schemes.DEFAULT, "adm:admin_menu")
-	if count == 0 {
+
+	if len(items) == 0 {
 		answerCb(ctx, api, chatId, cbId, "📋 Нет доступных музеев.", kb)
 		return
 	}
-	answerCb(ctx, api, chatId, cbId, fmt.Sprintf("🏛 Управление музеями (%d)\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите музей:", count), kb)
+
+	answerCb(ctx, api, chatId, cbId,
+		fmt.Sprintf("🏛 Управление музеями\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d\nВыберите музей:", page+1),
+		kb,
+	)
 }
 
 func showMuseumManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, museumId int64, cbId string) {
@@ -66,8 +117,8 @@ func showMuseumManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	kb := api.Messages.NewKeyboardBuilder()
 
 	if role == RoleBotAdmin || role == RoleMuseumAdmin {
-		kb.AddRow().AddCallback("✏️ Редактировать описание", schemes.DEFAULT, fmt.Sprintf("adm:edit_mus:%d", museumId))
-		kb.AddRow().AddCallback("📷 Изменить фото музея", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_mus:%d", museumId))
+		kb.AddRow().AddCallback("✏️ Редактировать описание", schemes.DEFAULT, fmt.Sprintf("adm:edit_mus:%d", museumId)).
+			AddCallback("📷 Фото музея", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_mus:%d", museumId))
 	}
 	if role == RoleBotAdmin {
 		kb.AddRow().AddCallback("🗑 Удалить музей", schemes.NEGATIVE, fmt.Sprintf("adm:del_mus:%d", museumId))
@@ -75,40 +126,19 @@ func showMuseumManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 
 	// AI / Интерактивный музей
 	kb.AddRow().AddCallback("🤖 Обучить модель AI", schemes.POSITIVE, fmt.Sprintf("adm:train_model:%d", museumId))
-	kb.AddRow().AddLink("🔬 Открыть интерактивный музей", schemes.POSITIVE,
-		fmt.Sprintf("%s/?museum_id=%d", getWebAppURL(), museumId))
+	if webURL, ok := getMuseumWebAppURL(museumId); ok {
+		kb.AddRow().AddLink("🔬 Открыть интерактивный музей", schemes.POSITIVE, webURL)
+	} else {
+		kb.AddRow().AddCallback("🔬 Настроить WEB_APP_URL", schemes.DEFAULT, "adm:webapp_help")
+	}
 
 	// Кнопки добавления
 	if role == RoleBotAdmin || role == RoleMuseumAdmin || role == RoleContentManager {
-		kb.AddRow().AddCallback("➕ Добавить выставку", schemes.POSITIVE, fmt.Sprintf("add_exh_mus:%d", museumId))
-		kb.AddRow().AddCallback("➕ Добавить мероприятие", schemes.POSITIVE, fmt.Sprintf("add_event_mus:%d", museumId))
+		kb.AddRow().AddCallback("➕ Добавить выставку", schemes.POSITIVE, fmt.Sprintf("add_exh_mus:%d", museumId)).
+			AddCallback("➕ Добавить мероприятие", schemes.POSITIVE, fmt.Sprintf("add_event_mus:%d", museumId))
 	}
-
-	// Выставки этого музея
-	exRows, err := pool.Query(ctx, "SELECT id, title FROM exhibitions WHERE museum_id=$1 ORDER BY title", museumId)
-	if err == nil {
-		for exRows.Next() {
-			var eid int64
-			var title string
-			if exRows.Scan(&eid, &title) == nil {
-				kb.AddRow().AddCallback("🎨 "+title, schemes.POSITIVE, fmt.Sprintf("adm:manage_exbn:%d", eid))
-			}
-		}
-		exRows.Close()
-	}
-
-	// Мероприятия
-	evRows, err := pool.Query(ctx, "SELECT id, title FROM events WHERE museum_id=$1 AND is_active=true ORDER BY event_date", museumId)
-	if err == nil {
-		for evRows.Next() {
-			var eid int64
-			var title string
-			if evRows.Scan(&eid, &title) == nil {
-				kb.AddRow().AddCallback("📅 "+title+" 🗑", schemes.NEGATIVE, fmt.Sprintf("adm:del_event:%d", eid))
-			}
-		}
-		evRows.Close()
-	}
+	kb.AddRow().AddCallback("🎨 Управление выставками", schemes.DEFAULT, fmt.Sprintf("adm:list_exbn:%d:0", museumId))
+	kb.AddRow().AddCallback("📅 Управление мероприятиями", schemes.DEFAULT, fmt.Sprintf("adm:list_events:%d:0", museumId))
 
 	kb.AddRow().AddCallback("🛡 Панель управления", schemes.DEFAULT, "adm:admin_menu")
 	answerCb(ctx, api, chatId, cbId, fmt.Sprintf("⚙️ Управление: %s\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите действие:", name), kb)
@@ -127,91 +157,285 @@ func showExhibitionManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Po
 		return
 	}
 	kb := api.Messages.NewKeyboardBuilder()
-	kb.AddRow().AddCallback("📷 Изменить фото выставки", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_exh:%d", exbnId))
-	kb.AddRow().AddCallback("🗑 Удалить выставку", schemes.NEGATIVE, fmt.Sprintf("adm:del_exbn:%d", exbnId))
+	kb.AddRow().AddCallback("📷 Фото выставки", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_exh:%d", exbnId)).
+		AddCallback("🗑 Удалить", schemes.NEGATIVE, fmt.Sprintf("adm:del_exbn:%d", exbnId))
 	kb.AddRow().AddCallback("➕ Добавить экспонат", schemes.POSITIVE, fmt.Sprintf("adm:add_exbt:%d", exbnId))
-
-	// Экспонаты
-	exRows, err := pool.Query(ctx, "SELECT id, title FROM exhibits WHERE exhibition_id=$1 ORDER BY title", exbnId)
-	if err == nil {
-		for exRows.Next() {
-			var eid int64
-			var t string
-			if exRows.Scan(&eid, &t) == nil {
-				row := kb.AddRow()
-				row.AddCallback("🖼 "+t, schemes.DEFAULT, fmt.Sprintf("view_exbt:%d", eid))
-				row.AddCallback("📷", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_exbt:%d", eid))
-				row.AddCallback("🗑", schemes.NEGATIVE, fmt.Sprintf("adm:del_exbt:%d", eid))
-			}
-		}
-		exRows.Close()
-	}
-
-	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId))
-	kb.AddRow().AddCallback("🛡 Панель управления", schemes.DEFAULT, "adm:admin_menu")
+	kb.AddRow().AddCallback("🖼 Управление экспонатами", schemes.DEFAULT, fmt.Sprintf("adm:list_exbt:%d:0", exbnId))
+	kb.AddRow().AddCallback("� К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId)).
+		AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
 	answerCb(ctx, api, chatId, cbId, fmt.Sprintf("🎨 Управление: %s\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите действие:", title), kb)
 }
 
-func showAddExhibition(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role, cbId string) {
-	if role != RoleBotAdmin && role != RoleMuseumAdmin && role != RoleContentManager {
+func showMuseumExhibitionsList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, museumId int64, page int, cbId string) {
+	if !canAccessMuseum(ctx, pool, userId, role, museumId) {
 		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
 		return
 	}
-	var queryStr string
-	var args []interface{}
-	if role == RoleBotAdmin {
-		queryStr = "SELECT id, COALESCE(NULLIF(short_name,''), name) FROM museums ORDER BY name"
-	} else {
-		queryStr = "SELECT m.id, COALESCE(NULLIF(m.short_name,''), m.name) FROM museums m JOIN staff s ON m.id=s.museum_id WHERE s.user_id=$1 ORDER BY m.name"
-		args = append(args, userId)
+	if page < 0 {
+		page = 0
 	}
-	rows, err := pool.Query(ctx, queryStr, args...)
+	const pageSize = 5
+	offset := page * pageSize
+
+	rows, err := pool.Query(ctx,
+		"SELECT id, title FROM exhibitions WHERE museum_id=$1 ORDER BY title LIMIT $2 OFFSET $3",
+		museumId, pageSize+1, offset,
+	)
 	if err != nil {
-		answerCb(ctx, api, chatId, cbId, "❌ Ошибка.", nil)
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка загрузки выставок.", nil)
 		return
 	}
 	defer rows.Close()
-	kb := api.Messages.NewKeyboardBuilder()
+
+	type exItem struct {
+		id    int64
+		title string
+	}
+	items := make([]exItem, 0, pageSize+1)
 	for rows.Next() {
-		var id int64
-		var name string
-		if rows.Scan(&id, &name) == nil {
-			kb.AddRow().AddCallback(name, schemes.POSITIVE, fmt.Sprintf("add_exh_mus:%d", id))
+		var it exItem
+		if rows.Scan(&it.id, &it.title) == nil {
+			items = append(items, it)
 		}
 	}
-	kb.AddRow().AddCallback("🛡 Назад", schemes.NEGATIVE, "adm:admin_menu")
-	answerCb(ctx, api, chatId, cbId, "🎨 Добавление выставки\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите музей:", kb)
+	hasNext := len(items) > pageSize
+	if hasNext {
+		items = items[:pageSize]
+	}
+
+	kb := api.Messages.NewKeyboardBuilder()
+	for _, it := range items {
+		kb.AddRow().AddCallback("🎨 "+it.title, schemes.DEFAULT, fmt.Sprintf("adm:manage_exbn:%d", it.id))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:list_exbn:%d:%d", museumId, page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:list_exbn:%d:%d", museumId, page+1))
+		}
+	}
+
+	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId)).
+		AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
+
+	if len(items) == 0 {
+		answerCb(ctx, api, chatId, cbId, "🎨 Выставок пока нет.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId, fmt.Sprintf("🎨 Выставки музея\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d", page+1), kb)
 }
 
-func showAddEvent(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role, cbId string) {
+func showMuseumEventsList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, museumId int64, page int, cbId string) {
+	if !canAccessMuseum(ctx, pool, userId, role, museumId) {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	if page < 0 {
+		page = 0
+	}
+	const pageSize = 4
+	offset := page * pageSize
+
+	rows, err := pool.Query(ctx,
+		"SELECT id, title, event_date FROM events WHERE museum_id=$1 AND is_active=true ORDER BY event_date LIMIT $2 OFFSET $3",
+		museumId, pageSize+1, offset,
+	)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка загрузки мероприятий.", nil)
+		return
+	}
+	defer rows.Close()
+
+	type evItem struct {
+		id        int64
+		title     string
+		eventDate time.Time
+	}
+	items := make([]evItem, 0, pageSize+1)
+	for rows.Next() {
+		var it evItem
+		if rows.Scan(&it.id, &it.title, &it.eventDate) == nil {
+			items = append(items, it)
+		}
+	}
+	hasNext := len(items) > pageSize
+	if hasNext {
+		items = items[:pageSize]
+	}
+
+	text := fmt.Sprintf("📅 Мероприятия музея\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d\n", page+1)
+	kb := api.Messages.NewKeyboardBuilder()
+	for _, it := range items {
+		text += fmt.Sprintf("\n• %s (%s)", it.title, it.eventDate.Format("02.01.2006 15:04"))
+		kb.AddRow().AddCallback("� "+it.title, schemes.NEGATIVE, fmt.Sprintf("adm:del_event:%d:%d:%d", it.id, museumId, page))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:list_events:%d:%d", museumId, page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:list_events:%d:%d", museumId, page+1))
+		}
+	}
+
+	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId)).
+		AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
+
+	if len(items) == 0 {
+		answerCb(ctx, api, chatId, cbId, "📅 Мероприятий пока нет.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId, text, kb)
+}
+
+func showExhibitManageList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, exbnId int64, page int, cbId string) {
+	var museumId int64
+	var exbnTitle string
+	err := pool.QueryRow(ctx, "SELECT museum_id, title FROM exhibitions WHERE id=$1", exbnId).Scan(&museumId, &exbnTitle)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Выставка не найдена.", nil)
+		return
+	}
+	if !canAccessMuseum(ctx, pool, userId, role, museumId) {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	if page < 0 {
+		page = 0
+	}
+
+	const pageSize = 4
+	offset := page * pageSize
+	rows, err := pool.Query(ctx,
+		"SELECT id, title FROM exhibits WHERE exhibition_id=$1 ORDER BY title LIMIT $2 OFFSET $3",
+		exbnId, pageSize+1, offset,
+	)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка загрузки экспонатов.", nil)
+		return
+	}
+	defer rows.Close()
+
+	type exbtItem struct {
+		id    int64
+		title string
+	}
+	items := make([]exbtItem, 0, pageSize+1)
+	for rows.Next() {
+		var it exbtItem
+		if rows.Scan(&it.id, &it.title) == nil {
+			items = append(items, it)
+		}
+	}
+	hasNext := len(items) > pageSize
+	if hasNext {
+		items = items[:pageSize]
+	}
+
+	kb := api.Messages.NewKeyboardBuilder()
+	for _, it := range items {
+		row := kb.AddRow()
+		row.AddCallback("🖼 "+it.title, schemes.DEFAULT, fmt.Sprintf("view_exbt:%d", it.id))
+		row.AddCallback("📷", schemes.DEFAULT, fmt.Sprintf("adm:set_photo_exbt:%d", it.id))
+		row.AddCallback("🗑", schemes.NEGATIVE, fmt.Sprintf("adm:del_exbt:%d:%d:%d", it.id, exbnId, page))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:list_exbt:%d:%d", exbnId, page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:list_exbt:%d:%d", exbnId, page+1))
+		}
+	}
+
+	kb.AddRow().AddCallback("� К выставке", schemes.DEFAULT, fmt.Sprintf("adm:manage_exbn:%d", exbnId)).
+		AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId))
+
+	if len(items) == 0 {
+		answerCb(ctx, api, chatId, cbId, "🖼 В этой выставке пока нет экспонатов.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId,
+		fmt.Sprintf("🖼 Экспонаты: %s\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d", exbnTitle, page+1), kb)
+}
+
+func showAddExhibition(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, page int, cbId string) {
 	if role != RoleBotAdmin && role != RoleMuseumAdmin && role != RoleContentManager {
 		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
 		return
 	}
-	var queryStr string
-	var args []interface{}
-	if role == RoleBotAdmin {
-		queryStr = "SELECT id, COALESCE(NULLIF(short_name,''), name) FROM museums ORDER BY name"
-	} else {
-		queryStr = "SELECT m.id, COALESCE(NULLIF(m.short_name,''), m.name) FROM museums m JOIN staff s ON m.id=s.museum_id WHERE s.user_id=$1 ORDER BY m.name"
-		args = append(args, userId)
-	}
-	rows, err := pool.Query(ctx, queryStr, args...)
+	const pageSize = 6
+	items, hasNext, err := loadMuseumsPage(ctx, pool, userId, role, page, pageSize)
 	if err != nil {
 		answerCb(ctx, api, chatId, cbId, "❌ Ошибка.", nil)
 		return
 	}
-	defer rows.Close()
+
 	kb := api.Messages.NewKeyboardBuilder()
-	for rows.Next() {
-		var id int64
-		var name string
-		if rows.Scan(&id, &name) == nil {
-			kb.AddRow().AddCallback(name, schemes.POSITIVE, fmt.Sprintf("add_event_mus:%d", id))
+	for _, item := range items {
+		kb.AddRow().AddCallback(item.name, schemes.POSITIVE, fmt.Sprintf("add_exh_mus:%d", item.id))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:add_exh:%d", page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:add_exh:%d", page+1))
 		}
 	}
+
 	kb.AddRow().AddCallback("🛡 Назад", schemes.NEGATIVE, "adm:admin_menu")
-	answerCb(ctx, api, chatId, cbId, "📅 Добавление мероприятия\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите музей:", kb)
+	if len(items) == 0 {
+		answerCb(ctx, api, chatId, cbId, "🎨 Добавление выставки\n━━━━━━━━━━━━━━━━━━━━\n\nНет доступных музеев.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId,
+		fmt.Sprintf("🎨 Добавление выставки\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d\nВыберите музей:", page+1), kb)
+}
+
+func showAddEvent(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, page int, cbId string) {
+	if role != RoleBotAdmin && role != RoleMuseumAdmin && role != RoleContentManager {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	const pageSize = 6
+	items, hasNext, err := loadMuseumsPage(ctx, pool, userId, role, page, pageSize)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка.", nil)
+		return
+	}
+
+	kb := api.Messages.NewKeyboardBuilder()
+	for _, item := range items {
+		kb.AddRow().AddCallback(item.name, schemes.POSITIVE, fmt.Sprintf("add_event_mus:%d", item.id))
+	}
+
+	if page > 0 || hasNext {
+		row := kb.AddRow()
+		if page > 0 {
+			row.AddCallback("⬅️ Назад", schemes.NEGATIVE, fmt.Sprintf("adm:add_event:%d", page-1))
+		}
+		if hasNext {
+			row.AddCallback("➡️ Далее", schemes.POSITIVE, fmt.Sprintf("adm:add_event:%d", page+1))
+		}
+	}
+
+	kb.AddRow().AddCallback("🛡 Назад", schemes.NEGATIVE, "adm:admin_menu")
+	if len(items) == 0 {
+		answerCb(ctx, api, chatId, cbId, "📅 Добавление мероприятия\n━━━━━━━━━━━━━━━━━━━━\n\nНет доступных музеев.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId,
+		fmt.Sprintf("📅 Добавление мероприятия\n━━━━━━━━━━━━━━━━━━━━\n\nСтраница %d\nВыберите музей:", page+1), kb)
 }
 
 func showStaffManagement(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId int64, role, cbId string) {
