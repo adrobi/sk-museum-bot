@@ -564,10 +564,19 @@ func showMuseumDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool,
 	}
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.POSITIVE, "main")
 	msg := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+	hasPhoto := false
 	if m.img != nil && *m.img != "" {
-		attachPhoto(ctx, api, msg, *m.img)
+		hasPhoto = attachPhoto(ctx, api, msg, *m.img)
 	}
-	_ = api.Messages.Send(ctx, msg)
+	if err := api.Messages.Send(ctx, msg); err != nil {
+		log.Printf("showMuseumDetails send error: %v", err)
+		if hasPhoto {
+			fallback := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+			if retryErr := api.Messages.Send(ctx, fallback); retryErr != nil {
+				log.Printf("showMuseumDetails fallback send error: %v", retryErr)
+			}
+		}
+	}
 }
 
 // ==========================================

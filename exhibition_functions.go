@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -71,10 +70,19 @@ func showExhibitionDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.P
 	}
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.POSITIVE, "main")
 	msg := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+	hasPhoto := false
 	if e.img != nil && *e.img != "" {
-		attachPhoto(ctx, api, msg, *e.img)
+		hasPhoto = attachPhoto(ctx, api, msg, *e.img)
 	}
-	_ = api.Messages.Send(ctx, msg)
+	if err := api.Messages.Send(ctx, msg); err != nil {
+		log.Printf("showExhibitionDetails send error: %v", err)
+		if hasPhoto {
+			fallback := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+			if retryErr := api.Messages.Send(ctx, fallback); retryErr != nil {
+				log.Printf("showExhibitionDetails fallback send error: %v", retryErr)
+			}
+		}
+	}
 }
 
 func showExhibitDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, id int64) {
@@ -118,28 +126,65 @@ func showExhibitDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool
 	}
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.POSITIVE, "main")
 	msg := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+	hasPhoto := false
 	if img != nil && *img != "" {
-		attachPhoto(ctx, api, msg, *img)
+		hasPhoto = attachPhoto(ctx, api, msg, *img)
 	}
-	_ = api.Messages.Send(ctx, msg)
+	if err := api.Messages.Send(ctx, msg); err != nil {
+		log.Printf("showExhibitDetails send error: %v", err)
+		if hasPhoto {
+			fallback := maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text)
+			if retryErr := api.Messages.Send(ctx, fallback); retryErr != nil {
+				log.Printf("showExhibitDetails fallback send error: %v", retryErr)
+			}
+		}
+	}
 }
 
-func attachPhoto(ctx context.Context, api *maxbot.Api, msg *maxbot.Message, imgStr string) {
-	token := ""
-	if strings.Contains(imgStr, "oneme.ru") && strings.Contains(imgStr, "r=") {
-		if u, e := url.Parse(imgStr); e == nil {
-			token = u.Query().Get("r")
-		}
-	} else if !strings.HasPrefix(imgStr, "http") {
-		token = imgStr
+func attachPhoto(ctx context.Context, api *maxbot.Api, msg *maxbot.Message, imgStr string) bool {
+	imageRef := strings.TrimSpace(imgStr)
+	if imageRef == "" {
+		return false
 	}
-	if token != "" {
-		msg.AddPhotoByToken(token)
-	} else {
-		if info, e := api.Uploads.UploadMediaFromUrl(ctx, schemes.PHOTO, imgStr); e == nil {
-			msg.AddPhotoByToken(info.Token)
-		} else {
-			log.Printf("Фото: %v", e)
+
+	lower := strings.ToLower(imageRef)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		photos, err := api.Uploads.UploadPhotoFromUrl(ctx, imageRef)
+		if err != nil {
+			log.Printf("Фото (url) не прикреплено: %v", err)
+			return false
 		}
+		for _, pt := range photos.Photos {
+			if pt.Token != "" {
+				msg.AddPhotoByToken(pt.Token)
+				return true
+			}
+		}
+		log.Printf("Фото (url) не прикреплено: пустой token в PhotoTokens")
+		return false
 	}
+
+	if !looksLikeAttachmentToken(imageRef) {
+		log.Printf("Фото (token) пропущено: неподдерживаемый image_ref=%q", imageRef)
+		return false
+	}
+
+	msg.AddPhotoByToken(imageRef)
+	return true
+}
+
+func looksLikeAttachmentToken(ref string) bool {
+	if ref == "" {
+		return false
+	}
+	if strings.ContainsAny(ref, " \t\r\n") {
+		return false
+	}
+	if strings.Contains(ref, "://") {
+		return false
+	}
+	if strings.Contains(ref, "/") || strings.Contains(ref, `\\`) {
+		return false
+	}
+	return true
 }
