@@ -55,13 +55,29 @@ func getPublicWebAppURL() (string, bool) {
 	return u.String(), true
 }
 
+func getBrowserWebAppURL() (string, bool) {
+	raw := getWebAppURL()
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	return u.String(), true
+}
+
 func getMuseumWebAppURL(museumId int64) (string, bool) {
 	_ = museumId
 	return getPublicWebAppURL()
 }
 
 func getMuseumWebBrowserURL(museumId int64) (string, bool) {
-	baseURL, ok := getPublicWebAppURL()
+	baseURL, ok := getBrowserWebAppURL()
 	if !ok {
 		return "", false
 	}

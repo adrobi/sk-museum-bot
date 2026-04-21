@@ -455,7 +455,9 @@ func sendMainMenu(ctx context.Context, api *maxbot.Api, chatId int64, cbId strin
 	kb.AddRow().AddMessage("📅 Мероприятия")
 	if webURL, ok := getPublicWebAppURL(); ok {
 		kb.AddRow().AddOpenApp("🔬 Мини-апп", webURL, "", 0)
-		kb.AddRow().AddLink("🌐 Открыть в браузере", schemes.DEFAULT, webURL)
+	}
+	if browserURL, ok := getBrowserWebAppURL(); ok {
+		kb.AddRow().AddLink("🌐 Открыть в браузере", schemes.DEFAULT, browserURL)
 	}
 	kb.AddRow().AddMessage("👨‍💻 Вход для сотрудников")
 	answerCb(ctx, api, chatId, cbId, "🏛 Музеи Ставропольского края\n━━━━━━━━━━━━━━━━━━━━\n\nДобро пожаловать! Выберите действие:", kb)
