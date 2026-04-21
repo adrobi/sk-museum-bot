@@ -54,20 +54,29 @@ function readBridgeState() {
   const hashPlatform = hashParams.get("WebAppPlatform") || "";
   const hashVersion = hashParams.get("WebAppVersion") || "";
 
-  const initData = wa?.initData || hashInitData;
+  const bridgeInitData = typeof wa?.initData === "string" ? wa.initData : "";
+  const bridgePlatform = typeof wa?.platform === "string" ? wa.platform : "";
+  const hasBridgeUser = typeof wa?.initDataUnsafe?.user?.id === "number";
+  const hasBridgeContext = Boolean(
+    bridgeInitData || hasBridgeUser || (bridgePlatform && bridgePlatform !== "web")
+  );
+  const hasHashContext = Boolean(hashInitData || hashPlatform);
+  const isMiniApp = hasBridgeContext || (!wa && hasHashContext);
+
+  const initData = bridgeInitData || (!wa ? hashInitData : "");
   const initDataUnsafe = wa?.initDataUnsafe && Object.keys(wa.initDataUnsafe).length > 0
     ? wa.initDataUnsafe
     : parseInitData(initData);
 
   return {
     raw: wa,
-    isMiniApp: Boolean(wa || hashInitData || hashPlatform),
+    isMiniApp,
     initData,
     initDataUnsafe,
     user: initDataUnsafe.user || null,
     startParam: initDataUnsafe.start_param || null,
-    platform: wa?.platform || hashPlatform || "web",
-    version: wa?.version || hashVersion || "",
+    platform: bridgePlatform || (!wa && isMiniApp ? hashPlatform : "web"),
+    version: wa?.version || (!wa && isMiniApp ? hashVersion : ""),
   };
 }
 

@@ -205,6 +205,51 @@ func setupBotCommands(ctx context.Context, api *maxbot.Api) {
 	}
 }
 
+func ensureMainAdminFromEnv(ctx context.Context, pool *pgxpool.Pool) {
+	var botAdminCount int
+	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM staff WHERE role='bot_admin'").Scan(&botAdminCount)
+	if err != nil {
+		log.Printf("ensure main admin: failed to count bot_admin users: %v", err)
+		return
+	}
+	if botAdminCount > 0 {
+		return
+	}
+
+	adminEmail := strings.TrimSpace(os.Getenv("BOOTSTRAP_BOT_ADMIN_EMAIL"))
+	adminIDRaw := strings.TrimSpace(os.Getenv("BOOTSTRAP_BOT_ADMIN_MAX_ID"))
+	if adminEmail == "" || adminIDRaw == "" {
+		log.Printf("ensure main admin: staff has no bot_admin; set BOOTSTRAP_BOT_ADMIN_EMAIL and BOOTSTRAP_BOT_ADMIN_MAX_ID")
+		return
+	}
+
+	adminID, err := strconv.ParseInt(adminIDRaw, 10, 64)
+	if err != nil || adminID <= 0 {
+		log.Printf("ensure main admin: invalid BOOTSTRAP_BOT_ADMIN_MAX_ID=%q", adminIDRaw)
+		return
+	}
+
+	_, err = pool.Exec(ctx,
+		`INSERT INTO staff (user_id, email, role, alias, museum_id, is_active)
+		 VALUES ($1, $2, 'bot_admin', $3, NULL, true)
+		 ON CONFLICT (user_id) DO UPDATE SET
+		   email = EXCLUDED.email,
+		   role = EXCLUDED.role,
+		   alias = EXCLUDED.alias,
+		   museum_id = NULL,
+		   is_active = true`,
+		adminID,
+		adminEmail,
+		"Главный администратор",
+	)
+	if err != nil {
+		log.Printf("ensure main admin: upsert failed: %v", err)
+		return
+	}
+
+	log.Printf("ensure main admin: created bot_admin for user_id=%d", adminID)
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env не найден")
@@ -216,6 +261,7 @@ func main() {
 		log.Fatal("БД:", err)
 	}
 	defer pool.Close()
+	ensureMainAdminFromEnv(ctx, pool)
 	token := os.Getenv("BOT_TOKEN")
 	if token == "" {
 		log.Fatal("BOT_TOKEN не установлен")

@@ -182,12 +182,9 @@ INSERT INTO museums (id, name, short_name, description, address, latitude, longi
 -- Устанавливаем сиквенс (счетчик ID) на последнее значение, чтобы при новых вставках через БД не было конфликтов
 SELECT setval('museums_id_seq', (SELECT MAX(id) FROM museums));
 
--- Сотрудники (после музеев!)
-INSERT INTO staff (user_id, email, role, alias, museum_id) VALUES 
-(111760418, 'aleksei.drobin@gmail.com', 'bot_admin', 'Главный администратор', NULL),
-(123456789, 'director@museum.ru', 'museum_admin', 'Директор музея', 1),
-(987654321, 'content@museum.ru', 'content_manager', 'Контент-менеджер', 1),
-(555666777, 'analyst@museum.ru', 'analyst', 'Аналитик', NULL);
+-- Сотрудники не заполняются тестовыми данными.
+-- Главный администратор создаётся ботом при старте из env:
+-- BOOTSTRAP_BOT_ADMIN_EMAIL + BOOTSTRAP_BOT_ADMIN_MAX_ID
 
 -- Выставки
 INSERT INTO exhibitions (museum_id, title, description, start_date, end_date) VALUES
