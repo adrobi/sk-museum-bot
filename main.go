@@ -206,10 +206,19 @@ func setupBotCommands(ctx context.Context, api *maxbot.Api) {
 }
 
 func ensureMainAdminFromEnv(ctx context.Context, pool *pgxpool.Pool) {
+	const maxRetries = 10
 	var botAdminCount int
-	err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM staff WHERE role='bot_admin'").Scan(&botAdminCount)
+	var err error
+	for i := 0; i < maxRetries; i++ {
+		err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM staff WHERE role='bot_admin'").Scan(&botAdminCount)
+		if err == nil {
+			break
+		}
+		log.Printf("ensure main admin: DB not ready, retry %d/%d: %v", i+1, maxRetries, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
-		log.Printf("ensure main admin: failed to count bot_admin users: %v", err)
+		log.Printf("ensure main admin: failed to count bot_admin users after %d retries: %v", maxRetries, err)
 		return
 	}
 	if botAdminCount > 0 {
