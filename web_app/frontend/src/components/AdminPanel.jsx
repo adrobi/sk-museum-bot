@@ -192,7 +192,7 @@ export default function AdminPanel({ onBack, bridge }) {
         throw new Error("Укажите email и MAX ID");
       }
       const data = await adminLogin({ email: normalizedEmail, identifier: normalizedMaxId });
-      setLoginContext({ email: normalizedEmail, userId: data.user_id, identifier: normalizedMaxId, authSource: data.auth_source });
+      setLoginContext({ email: normalizedEmail, identifier: normalizedMaxId, authSource: data.auth_source });
       setInfo(`Код отправлен на ${data.masked_email}`);
       setPhase("otp");
     }
@@ -203,10 +203,11 @@ export default function AdminPanel({ onBack, bridge }) {
   async function handleVerify(e) {
     e.preventDefault(); setLoading(true); setError("");
     try {
+      const useMaxSessionId = loginContext?.authSource === "max";
       const data = await adminVerify({
         email: loginContext?.email,
         identifier: loginContext?.identifier,
-        userId: loginContext?.userId,
+        userId: useMaxSessionId ? loginContext?.userId : undefined,
         code,
       });
       saveSession(data.token, data.role);
@@ -231,8 +232,8 @@ export default function AdminPanel({ onBack, bridge }) {
         <h2 className="text-xl font-bold text-stone-100">Вход для администраторов</h2>
         <p className="text-stone-500 text-sm">
           {bridge?.isMiniApp
-            ? "Если ваш MAX ID есть в staff, код придёт на привязанную почту"
-            : "В браузере укажите рабочий email и MAX ID из таблицы staff"}
+            ? "Если ваш MAX ID зарегистрирован, код придёт на привязанную почту"
+            : "В браузере укажите рабочий email и ваш MAX ID"}
         </p>
       </div>
       {!bridge?.isMiniApp && (
@@ -278,7 +279,7 @@ export default function AdminPanel({ onBack, bridge }) {
       <div className="text-center space-y-1">
         <div className="text-4xl mb-2">📩</div>
         <h2 className="text-xl font-bold text-stone-100">Введите код</h2>
-        <p className="text-stone-500 text-sm">Код отправлен на <span className="text-stone-300">{loginContext?.email || "почту сотрудника"}</span></p>
+        <p className="text-stone-500 text-sm">Код отправлен на <span className="text-stone-300">{loginContext?.email || "вашу почту"}</span></p>
       </div>
       <form onSubmit={handleVerify} className="space-y-3">
         <div className="relative">

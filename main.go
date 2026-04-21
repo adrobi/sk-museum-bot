@@ -60,6 +60,21 @@ func getMuseumWebAppURL(museumId int64) (string, bool) {
 	return getPublicWebAppURL()
 }
 
+func getMuseumWebBrowserURL(museumId int64) (string, bool) {
+	baseURL, ok := getPublicWebAppURL()
+	if !ok {
+		return "", false
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", false
+	}
+	q := u.Query()
+	q.Set("museum_id", strconv.FormatInt(museumId, 10))
+	u.RawQuery = q.Encode()
+	return u.String(), true
+}
+
 type UserState struct {
 	State     string
 	ExtraData string
@@ -162,6 +177,18 @@ func answerCb(ctx context.Context, api *maxbot.Api, chatId int64, cbId, text str
 	}
 }
 
+func setupBotCommands(ctx context.Context, api *maxbot.Api) {
+	_, err := api.Bots.PatchBot(ctx, &schemes.BotPatch{
+		Commands: []schemes.BotCommand{
+			{Name: "start", Description: "Открыть главное меню"},
+			{Name: "myid", Description: "Показать мой MAX ID"},
+		},
+	})
+	if err != nil {
+		log.Printf("setup bot commands error: %v", err)
+	}
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env не найден")
@@ -181,6 +208,7 @@ func main() {
 	if err != nil {
 		log.Fatal("API:", err)
 	}
+	setupBotCommands(ctx, api)
 	fmt.Println("Бот запущен.")
 	for update := range api.GetUpdates(ctx) {
 		switch upd := update.(type) {

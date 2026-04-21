@@ -141,22 +141,24 @@ export default function MuseumSelect({ onSelect, onOpenMap, bridge }) {
 
       {/* Геолокация и карта */}
       <div className="flex gap-2">
-        <button
-          onClick={handleGeo}
-          disabled={geoLoading}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-museum-500/50 text-museum-400 hover:bg-museum-500/10 transition-colors text-sm font-medium disabled:opacity-50"
-        >
-          {geoLoading ? (
-            <Loader2 size={16} className="animate-spin" />
-          ) : (
-            <Navigation size={16} />
-          )}
-          {geoLoading ? "Определяем..." : "Ближайшие"}
-        </button>
+        {!bridge?.isMiniApp && (
+          <button
+            onClick={handleGeo}
+            disabled={geoLoading}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-museum-500/50 text-museum-400 hover:bg-museum-500/10 transition-colors text-sm font-medium disabled:opacity-50"
+          >
+            {geoLoading ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <Navigation size={16} />
+            )}
+            {geoLoading ? "Определяем..." : "Ближайшие"}
+          </button>
+        )}
         <button
           onClick={() => onOpenMap(museums)}
           disabled={loading || museums.length === 0}
-          className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-museum-500/50 text-museum-400 hover:bg-museum-500/10 transition-colors text-sm font-medium disabled:opacity-50"
+          className={`${bridge?.isMiniApp ? "w-full" : "flex-1"} flex items-center justify-center gap-2 py-2.5 rounded-xl border border-museum-500/50 text-museum-400 hover:bg-museum-500/10 transition-colors text-sm font-medium disabled:opacity-50`}
         >
           <Map size={16} />
           Выбрать на карте

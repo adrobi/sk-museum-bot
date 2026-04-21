@@ -15,7 +15,8 @@ export default function CameraView({ museum, onResults, bridge }) {
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [cameraActive, setCameraActive] = useState(false);
   const [startingCamera, setStartingCamera] = useState(false);
-  const requiresManualStart = bridge?.platform === "ios" || bridge?.platform === "android";
+  const isMiniAppCaptureOnly = Boolean(bridge?.isMiniApp);
+  const requiresManualStart = !isMiniAppCaptureOnly && (bridge?.platform === "ios" || bridge?.platform === "android");
 
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
@@ -131,14 +132,16 @@ export default function CameraView({ museum, onResults, bridge }) {
   }, [bridge, stopCamera]);
 
   useEffect(() => {
-    if (!requiresManualStart) {
+    if (!isMiniAppCaptureOnly && !requiresManualStart) {
       startCamera();
     }
-  }, [requiresManualStart, startCamera]);
+  }, [isMiniAppCaptureOnly, requiresManualStart, startCamera]);
 
   useEffect(() => {
-    syncVideoDevices();
-  }, [syncVideoDevices]);
+    if (!isMiniAppCaptureOnly) {
+      syncVideoDevices();
+    }
+  }, [isMiniAppCaptureOnly, syncVideoDevices]);
 
   async function identifyFromBlob(blob) {
     if (!blob) return;
@@ -184,6 +187,10 @@ export default function CameraView({ museum, onResults, bridge }) {
   }
 
   async function handleStartCamera() {
+    if (isMiniAppCaptureOnly) {
+      openSystemCamera();
+      return;
+    }
     await startCamera();
   }
 
@@ -210,9 +217,11 @@ export default function CameraView({ museum, onResults, bridge }) {
               <button onClick={startCamera} className="btn-secondary text-sm">
                 Повторить
               </button>
-              <button onClick={openSystemCamera} className="btn-secondary text-sm">
-                Открыть камеру телефона
-              </button>
+              {isMiniAppCaptureOnly && (
+                <button onClick={openSystemCamera} className="btn-secondary text-sm">
+                  Открыть камеру телефона
+                </button>
+              )}
             </div>
           </div>
         ) : cameraActive ? (
@@ -257,7 +266,9 @@ export default function CameraView({ museum, onResults, bridge }) {
             )}
             <div className="space-y-2 max-w-xs">
               <p className="text-stone-200 text-sm">
-                {requiresManualStart
+                {isMiniAppCaptureOnly
+                  ? "Для распознавания откроется камера телефона."
+                  : requiresManualStart
                   ? "Нажмите кнопку ниже, чтобы MAX запросил доступ к камере."
                   : "Подготавливаем камеру..."}
               </p>
@@ -296,19 +307,21 @@ export default function CameraView({ museum, onResults, bridge }) {
 
         <div className="flex gap-3 items-center justify-center">
           {/* Toggle camera button */}
-          <button
-            onClick={toggleCamera}
-            disabled={!cameraActive || startingCamera}
-            className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
-            title="Переключить камеру"
-          >
-            <ZoomIn size={18} />
-          </button>
+          {!isMiniAppCaptureOnly && (
+            <button
+              onClick={toggleCamera}
+              disabled={!cameraActive || startingCamera}
+              className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
+              title="Переключить камеру"
+            >
+              <ZoomIn size={18} />
+            </button>
+          )}
 
           {/* Main capture button */}
           <button
             onClick={cameraActive ? handleCapture : handleStartCamera}
-            disabled={identifying || startingCamera || (!!camError && !cameraActive)}
+            disabled={identifying || startingCamera || (!isMiniAppCaptureOnly && !!camError && !cameraActive)}
             className="w-16 h-16 rounded-full bg-museum-500 hover:bg-museum-400 disabled:opacity-50 flex items-center justify-center transition-colors shadow-lg shadow-museum-500/30"
           >
             {startingCamera ? (
@@ -320,14 +333,15 @@ export default function CameraView({ museum, onResults, bridge }) {
             )}
           </button>
 
-          {/* Placeholder for symmetry */}
-          <button
-            onClick={openSystemCamera}
-            className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
-            title="Сделать снимок через телефон"
-          >
-            <Camera size={18} />
-          </button>
+          {isMiniAppCaptureOnly && (
+            <button
+              onClick={openSystemCamera}
+              className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center text-stone-400 hover:bg-stone-700 transition-colors"
+              title="Сделать снимок через телефон"
+            >
+              <Camera size={18} />
+            </button>
+          )}
         </div>
       </div>
     </div>
