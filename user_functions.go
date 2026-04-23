@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -108,7 +109,7 @@ func showEvents(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId
 	rows, err := pool.Query(ctx, `
 		SELECT e.id, e.title, e.event_date, e.price, COALESCE(m.short_name, m.name)
 		FROM events e JOIN museums m ON e.museum_id=m.id
-		WHERE e.is_active=true AND e.event_date > NOW() ORDER BY e.event_date LIMIT 10`)
+		WHERE e.is_active=true AND e.event_date::date >= CURRENT_DATE ORDER BY e.event_date LIMIT 10`)
 	if err != nil {
 		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText("❌ Ошибка."))
 		return
@@ -140,7 +141,7 @@ func showEvents(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId
 	_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(text))
 }
 
-func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, eventId int64, cbId string) {
+func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, eventId int64, cbId string) {
 	var title, desc, museum string
 	var eventDate time.Time
 	var duration, maxPart, curPart int
@@ -148,7 +149,8 @@ func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	err := pool.QueryRow(ctx, `
 		SELECT e.title, COALESCE(e.description,''), e.event_date, e.duration_hours,
 		       e.max_participants, e.current_participants, e.price, COALESCE(m.short_name,m.name)
-		FROM events e JOIN museums m ON e.museum_id=m.id WHERE e.id=$1`, eventId).
+		FROM events e JOIN museums m ON e.museum_id=m.id
+		WHERE e.id=$1 AND e.is_active=true AND e.event_date::date >= CURRENT_DATE`, eventId).
 		Scan(&title, &desc, &eventDate, &duration, &maxPart, &curPart, &price, &museum)
 	if err != nil {
 		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)
@@ -167,27 +169,101 @@ func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	if desc != "" {
 		text += fmt.Sprintf("\n📝 %s\n", desc)
 	}
+	var regExists int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM event_registrations WHERE event_id=$1 AND user_id=$2", eventId, userId).Scan(&regExists)
 	kb := api.Messages.NewKeyboardBuilder()
-	if maxPart == 0 || curPart < maxPart {
+	if regExists > 0 {
+		text += "\n✅ Вы записаны на это мероприятие"
+		kb.AddRow().AddCallback("❌ Отменить запись", schemes.NEGATIVE, fmt.Sprintf("unreg_event:%d", eventId))
+	} else if maxPart == 0 || curPart < maxPart {
 		kb.AddRow().AddCallback("✅ Записаться", schemes.POSITIVE, fmt.Sprintf("register_event:%d", eventId))
 	} else {
-		kb.AddRow().AddCallback("❌ Мест нет", schemes.NEGATIVE, "main")
+		text += "\n❌ Мест нет"
 	}
+	kb.AddRow().AddCallback("📅 Все мероприятия", schemes.DEFAULT, "events_list:0")
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
 	answerCb(ctx, api, chatId, cbId, text, kb)
 }
 
 func registerForEvent(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, eventId int64, cbId string) {
+	var eventExists int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE id=$1 AND is_active=true AND event_date::date >= CURRENT_DATE", eventId).Scan(&eventExists)
+	if eventExists == 0 {
+		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие недоступно.", nil)
+		return
+	}
+	var regExists int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM event_registrations WHERE event_id=$1 AND user_id=$2", eventId, userId).Scan(&regExists)
+	if regExists > 0 {
+		answerCb(ctx, api, chatId, cbId, "ℹ️ Вы уже записаны на это мероприятие.", nil)
+		return
+	}
 	var maxPart, curPart int
 	pool.QueryRow(ctx, "SELECT max_participants, current_participants FROM events WHERE id=$1", eventId).Scan(&maxPart, &curPart)
 	if maxPart > 0 && curPart >= maxPart {
 		answerCb(ctx, api, chatId, cbId, "❌ Мест нет.", nil)
 		return
 	}
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("⏰ За 4 часа", schemes.DEFAULT, fmt.Sprintf("reg_remind:%d:4", eventId))
+	kb.AddRow().AddCallback("⏰ За 12 часов", schemes.DEFAULT, fmt.Sprintf("reg_remind:%d:12", eventId))
+	kb.AddRow().AddCallback("⏰ За 24 часа", schemes.DEFAULT, fmt.Sprintf("reg_remind:%d:24", eventId))
+	kb.AddRow().AddCallback("❌ Отмена", schemes.NEGATIVE, fmt.Sprintf("view_event:%d", eventId))
+	answerCb(ctx, api, chatId, cbId, "🔔 За сколько часов напомнить о мероприятии?", kb)
+}
+
+func confirmEventRegistration(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, eventId int64, remindHours int, cbId string) {
+	var regExists int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM event_registrations WHERE event_id=$1 AND user_id=$2", eventId, userId).Scan(&regExists)
+	if regExists > 0 {
+		answerCb(ctx, api, chatId, cbId, "ℹ️ Вы уже записаны на это мероприятие.", nil)
+		return
+	}
+	var maxPart, curPart int
+	var title string
+	var eventDate time.Time
+	err := pool.QueryRow(ctx, "SELECT title, event_date, max_participants, current_participants FROM events WHERE id=$1 AND is_active=true AND event_date::date >= CURRENT_DATE", eventId).
+		Scan(&title, &eventDate, &maxPart, &curPart)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)
+		return
+	}
+	if maxPart > 0 && curPart >= maxPart {
+		answerCb(ctx, api, chatId, cbId, "❌ Мест нет.", nil)
+		return
+	}
+	tag, err := pool.Exec(ctx,
+		"INSERT INTO event_registrations (event_id, user_id, chat_id, remind_hours) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+		eventId, userId, chatId, remindHours)
+	if err != nil {
+		log.Printf("confirmEventRegistration insert error: %v", err)
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка записи.", nil)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		answerCb(ctx, api, chatId, cbId, "ℹ️ Вы уже записаны на это мероприятие.", nil)
+		return
+	}
 	pool.Exec(ctx, "UPDATE events SET current_participants=current_participants+1 WHERE id=$1", eventId)
 	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("📅 Все мероприятия", schemes.DEFAULT, "events_list:0")
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
-	answerCb(ctx, api, chatId, cbId, "🎉 Вы записаны!\n━━━━━━━━━━━━━━━━━━━━\n\nПриходите вовремя!", kb)
+	answerCb(ctx, api, chatId, cbId, fmt.Sprintf(
+		"🎉 Вы записаны!\n━━━━━━━━━━━━━━━━━━━━\n\n🎭 %s\n📅 %s\n🔔 Напомним за %d ч.\n\nПриходите вовремя!",
+		title, eventDate.Format("02.01.2006 в 15:04"), remindHours), kb)
+}
+
+func unregisterFromEvent(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, eventId int64, cbId string) {
+	tag, err := pool.Exec(ctx, "DELETE FROM event_registrations WHERE event_id=$1 AND user_id=$2", eventId, userId)
+	if err != nil || tag.RowsAffected() == 0 {
+		answerCb(ctx, api, chatId, cbId, "ℹ️ Вы не были записаны на это мероприятие.", nil)
+		return
+	}
+	pool.Exec(ctx, "UPDATE events SET current_participants=GREATEST(current_participants-1,0) WHERE id=$1", eventId)
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("📅 Все мероприятия", schemes.DEFAULT, "events_list:0")
+	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
+	answerCb(ctx, api, chatId, cbId, "✅ Запись отменена.", kb)
 }
 
 func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {

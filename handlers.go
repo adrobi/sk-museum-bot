@@ -616,3 +616,49 @@ func optLine(lines []string, idx int) *string {
 func isValidRole(r string) bool {
 	return r == "bot_admin" || r == "museum_admin" || r == "content_manager" || r == "analyst"
 }
+
+func notifyEventRegistrants(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, eventId int64, message string) {
+	rows, err := pool.Query(ctx, "SELECT chat_id FROM event_registrations WHERE event_id=$1", eventId)
+	if err != nil {
+		log.Printf("notifyEventRegistrants query error: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var chatId int64
+		if rows.Scan(&chatId) == nil {
+			if err := api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText(message)); err != nil {
+				log.Printf("notifyEventRegistrants send to chat %d error: %v", chatId, err)
+			}
+		}
+	}
+}
+
+func handleEditEventDateData(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, text, eventIdStr string) {
+	eventId, _ := strconv.ParseInt(eventIdStr, 10, 64)
+	newDate, err := time.Parse("02.01.2006 15:04", strings.TrimSpace(text))
+	if err != nil {
+		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).AddKeyboard(adminCancelKeyboard(api)).SetText("❌ Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ"))
+		return
+	}
+	var title string
+	var oldDate time.Time
+	err = pool.QueryRow(ctx, "SELECT title, event_date FROM events WHERE id=$1", eventId).Scan(&title, &oldDate)
+	if err != nil {
+		clearUserState(userId)
+		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText("❌ Мероприятие не найдено."))
+		return
+	}
+	pool.Exec(ctx, "UPDATE events SET event_date=$1 WHERE id=$2", newDate, eventId)
+	pool.Exec(ctx, "UPDATE event_registrations SET reminded=false WHERE event_id=$1", eventId)
+	clearUserState(userId)
+	go notifyEventRegistrants(ctx, api, pool, eventId, fmt.Sprintf(
+		"⚠️ Изменение времени!\n━━━━━━━━━━━━━━━━━━━━\n\n🎭 %s\n\nБыло: %s\nСтало: %s",
+		title, oldDate.Format("02.01.2006 15:04"), newDate.Format("02.01.2006 15:04")))
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("⚙️ К мероприятию", schemes.DEFAULT, fmt.Sprintf("adm:manage_event:%d", eventId))
+	kb.AddRow().AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
+	_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText(
+		fmt.Sprintf("✅ Дата мероприятия «%s» изменена!\n📅 %s\n\nВсе записавшиеся уведомлены.",
+			title, newDate.Format("02.01.2006 15:04"))))
+}

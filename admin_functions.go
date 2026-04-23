@@ -271,7 +271,7 @@ func showMuseumEventsList(ctx context.Context, api *maxbot.Api, pool *pgxpool.Po
 	kb := api.Messages.NewKeyboardBuilder()
 	for _, it := range items {
 		text += fmt.Sprintf("\n• %s (%s)", it.title, it.eventDate.Format("02.01.2006 15:04"))
-		kb.AddRow().AddCallback("� "+it.title, schemes.NEGATIVE, fmt.Sprintf("adm:del_event:%d:%d:%d", it.id, museumId, page))
+		kb.AddRow().AddCallback("📅 "+it.title, schemes.DEFAULT, fmt.Sprintf("adm:manage_event:%d", it.id))
 	}
 
 	if page > 0 || hasNext {
@@ -571,6 +571,93 @@ func showReviews(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatI
 	}
 	kb := api.Messages.NewKeyboardBuilder()
 	kb.AddRow().AddCallback("🛡 Панель управления", schemes.DEFAULT, "adm:admin_menu")
+	answerCb(ctx, api, chatId, cbId, text, kb)
+}
+
+func showEventManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, eventId int64, cbId string) {
+	var title string
+	var museumId int64
+	var eventDate time.Time
+	var duration, maxPart, curPart int
+	var price float64
+	err := pool.QueryRow(ctx, `
+		SELECT e.title, e.museum_id, e.event_date,
+		       e.duration_hours, e.max_participants, e.current_participants, e.price
+		FROM events e WHERE e.id=$1`, eventId).
+		Scan(&title, &museumId, &eventDate, &duration, &maxPart, &curPart, &price)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)
+		return
+	}
+	if !canAccessMuseum(ctx, pool, userId, role, museumId) {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	text := fmt.Sprintf("⚙️ Управление: %s\n━━━━━━━━━━━━━━━━━━━━\n\n📅 %s\n⏱ %d ч.\n👥 Записано: %d",
+		title, eventDate.Format("02.01.2006 15:04"), duration, curPart)
+	if maxPart > 0 {
+		text += fmt.Sprintf(" / %d", maxPart)
+	}
+	if price > 0 {
+		text += fmt.Sprintf("\n💰 %.0f руб.", price)
+	}
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("✏️ Изменить дату/время", schemes.DEFAULT, fmt.Sprintf("adm:edit_event_date:%d", eventId))
+	if role == RoleBotAdmin || role == RoleMuseumAdmin {
+		kb.AddRow().AddCallback("📊 Записавшиеся", schemes.DEFAULT, fmt.Sprintf("adm:event_regs:%d", eventId))
+	}
+	kb.AddRow().AddCallback("🗑 Удалить мероприятие", schemes.NEGATIVE, fmt.Sprintf("adm:del_event:%d:%d:0", eventId, museumId))
+	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("adm:manage_mus:%d", museumId)).
+		AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
+	answerCb(ctx, api, chatId, cbId, text, kb)
+}
+
+func showEventRegistrations(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId int64, role string, eventId int64, cbId string) {
+	if role != RoleBotAdmin && role != RoleMuseumAdmin {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	var title string
+	var museumId int64
+	err := pool.QueryRow(ctx, "SELECT title, museum_id FROM events WHERE id=$1", eventId).Scan(&title, &museumId)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)
+		return
+	}
+	if !canAccessMuseum(ctx, pool, userId, role, museumId) {
+		answerCb(ctx, api, chatId, cbId, "⛔ Нет доступа.", nil)
+		return
+	}
+	rows, err := pool.Query(ctx,
+		"SELECT user_id, remind_hours, reminded, created_at FROM event_registrations WHERE event_id=$1 ORDER BY created_at", eventId)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка.", nil)
+		return
+	}
+	defer rows.Close()
+	text := fmt.Sprintf("📊 Записавшиеся: %s\n━━━━━━━━━━━━━━━━━━━━\n\n", title)
+	count := 0
+	for rows.Next() {
+		var uid int64
+		var rh int
+		var reminded bool
+		var createdAt time.Time
+		if rows.Scan(&uid, &rh, &reminded, &createdAt) == nil {
+			count++
+			status := "⏳"
+			if reminded {
+				status = "✅"
+			}
+			text += fmt.Sprintf("%d. 🆔 %d | 🔔 %dч %s | 📅 %s\n",
+				count, uid, rh, status, createdAt.Format("02.01 15:04"))
+		}
+	}
+	if count == 0 {
+		text += "Никто не записан.\n"
+	}
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("⬅️ К мероприятию", schemes.DEFAULT, fmt.Sprintf("adm:manage_event:%d", eventId))
+	kb.AddRow().AddCallback("🛡 Панель", schemes.DEFAULT, "adm:admin_menu")
 	answerCb(ctx, api, chatId, cbId, text, kb)
 }
 

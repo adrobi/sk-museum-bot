@@ -259,6 +259,61 @@ func ensureMainAdminFromEnv(ctx context.Context, pool *pgxpool.Pool) {
 	log.Printf("ensure main admin: created bot_admin for user_id=%d", adminID)
 }
 
+func startEventLoop(ctx context.Context, pool *pgxpool.Pool, api *maxbot.Api) {
+	run := func() {
+		if _, err := pool.Exec(ctx,
+			"UPDATE events SET is_active=false WHERE is_active=true AND event_date::date < CURRENT_DATE"); err != nil {
+			log.Printf("event loop: deactivate past events error: %v", err)
+		}
+
+		rows, err := pool.Query(ctx, `
+			SELECT er.id, er.chat_id, er.remind_hours, e.title, e.event_date
+			FROM event_registrations er
+			JOIN events e ON e.id=er.event_id
+			WHERE er.reminded=false
+			  AND e.is_active=true
+			  AND e.event_date::date >= CURRENT_DATE
+			  AND NOW() >= (e.event_date - make_interval(hours => er.remind_hours))`)
+		if err != nil {
+			log.Printf("event loop: reminder query error: %v", err)
+			return
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var regId int64
+			var chatId int64
+			var remindHours int
+			var title string
+			var eventDate time.Time
+			if rows.Scan(&regId, &chatId, &remindHours, &title, &eventDate) != nil {
+				continue
+			}
+
+			msg := fmt.Sprintf("🔔 Напоминание о мероприятии\n━━━━━━━━━━━━━━━━━━━━\n\n🎭 %s\n📅 %s\n⏰ До начала ~ %d ч.",
+				title, eventDate.Format("02.01.2006 15:04"), remindHours)
+			if err := api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText(msg)); err != nil {
+				log.Printf("event loop: reminder send to chat %d error: %v", chatId, err)
+			}
+			if _, err := pool.Exec(ctx, "UPDATE event_registrations SET reminded=true WHERE id=$1", regId); err != nil {
+				log.Printf("event loop: reminder mark error: %v", err)
+			}
+		}
+	}
+
+	run()
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println(".env не найден")
@@ -280,6 +335,7 @@ func main() {
 		log.Fatal("API:", err)
 	}
 	setupBotCommands(ctx, api)
+	go startEventLoop(ctx, pool, api)
 	fmt.Println("Бот запущен.")
 	for update := range api.GetUpdates(ctx) {
 		switch upd := update.(type) {
@@ -377,6 +433,9 @@ func handleMessage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, upd
 			return
 		case "awaiting_event_data":
 			handleAddEventData(ctx, api, pool, chatId, userId, text, state.ExtraData)
+			return
+		case "awaiting_event_edit_date":
+			handleEditEventDateData(ctx, api, pool, chatId, userId, text, state.ExtraData)
 			return
 		case "awaiting_staff_data":
 			handleAddStaffData(ctx, api, pool, chatId, userId, text)
@@ -598,11 +657,38 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 				}
 			}
 			showMuseumEventsList(ctx, api, pool, chatId, userId, role, museumId, page, cbId)
+		case "manage_event":
+			if len(parts) < 3 {
+				return
+			}
+			eid, _ := strconv.ParseInt(parts[2], 10, 64)
+			showEventManage(ctx, api, pool, chatId, userId, role, eid, cbId)
+		case "event_regs":
+			if len(parts) < 3 {
+				return
+			}
+			eid, _ := strconv.ParseInt(parts[2], 10, 64)
+			showEventRegistrations(ctx, api, pool, chatId, userId, role, eid, cbId)
+		case "edit_event_date":
+			if len(parts) < 3 {
+				return
+			}
+			eid, _ := strconv.ParseInt(parts[2], 10, 64)
+			setUserState(userId, "awaiting_event_edit_date", parts[2])
+			kb := api.Messages.NewKeyboardBuilder()
+			kb.AddRow().AddCallback("❌ Отмена", schemes.NEGATIVE, fmt.Sprintf("adm:manage_event:%d", eid))
+			answerCb(ctx, api, chatId, cbId, "✏️ Изменение даты/времени\n━━━━━━━━━━━━━━━━━━━━\n\nОтправьте новую дату:\nДД.ММ.ГГГГ ЧЧ:ММ", kb)
 		case "del_event":
 			if len(parts) < 3 {
 				return
 			}
 			eid, _ := strconv.ParseInt(parts[2], 10, 64)
+			var evTitle string
+			pool.QueryRow(ctx, "SELECT title FROM events WHERE id=$1", eid).Scan(&evTitle)
+			if evTitle != "" {
+				notifyEventRegistrants(ctx, api, pool, eid, fmt.Sprintf(
+					"❌ Мероприятие отменено!\n━━━━━━━━━━━━━━━━━━━━\n\n🎭 %s", evTitle))
+			}
 			pool.Exec(ctx, "DELETE FROM events WHERE id=$1", eid)
 			if len(parts) >= 5 {
 				museumId, _ := strconv.ParseInt(parts[3], 10, 64)
@@ -680,6 +766,10 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 		sendMainMenu(ctx, api, chatId, cbId)
 		return
 	}
+	if parts[0] == "events_list" {
+		showEvents(ctx, api, pool, chatId)
+		return
+	}
 	if len(parts) < 2 {
 		return
 	}
@@ -694,9 +784,20 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 	case "view_exbt":
 		showExhibitDetails(ctx, api, pool, chatId, id)
 	case "view_event":
-		showEventDetails(ctx, api, pool, chatId, id, cbId)
+		showEventDetails(ctx, api, pool, chatId, userId, id, cbId)
 	case "register_event":
 		registerForEvent(ctx, api, pool, chatId, userId, id, cbId)
+	case "unreg_event":
+		unregisterFromEvent(ctx, api, pool, chatId, userId, id, cbId)
+	case "reg_remind":
+		if len(parts) >= 3 {
+			hours, _ := strconv.Atoi(parts[2])
+			if hours == 4 || hours == 12 || hours == 24 {
+				confirmEventRegistration(ctx, api, pool, chatId, userId, id, hours, cbId)
+			}
+		}
+	case "events_list":
+		showEvents(ctx, api, pool, chatId)
 	case "rate_menu":
 		showRateMenu(ctx, api, pool, chatId, userId, id, cbId)
 	case "rate_museum":
