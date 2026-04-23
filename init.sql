@@ -1,7 +1,8 @@
--- Очистка (CASCADE удалит зависимые данные)
+-- Очистка
 DROP TABLE IF EXISTS exhibit_category_links CASCADE;
 DROP TABLE IF EXISTS exhibits CASCADE;
 DROP TABLE IF EXISTS exhibitions CASCADE;
+DROP TABLE IF EXISTS event_registrations CASCADE;
 DROP TABLE IF EXISTS events CASCADE;
 DROP TABLE IF EXISTS reviews CASCADE;
 DROP TABLE IF EXISTS search_logs CASCADE;
@@ -79,7 +80,19 @@ CREATE TABLE events (
     is_active BOOLEAN DEFAULT true
 );
 
--- 7. Отзывы
+-- 7. Записи на мероприятия
+CREATE TABLE event_registrations (
+    id SERIAL PRIMARY KEY,
+    event_id INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    user_id BIGINT NOT NULL,
+    chat_id BIGINT NOT NULL,
+    remind_hours INTEGER NOT NULL DEFAULT 4 CHECK (remind_hours IN (4, 12, 24)),
+    reminded BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (event_id, user_id)
+);
+
+-- 8. Отзывы
 CREATE TABLE reviews (
     id SERIAL PRIMARY KEY,
     museum_id INTEGER REFERENCES museums(id) ON DELETE CASCADE,
@@ -89,7 +102,7 @@ CREATE TABLE reviews (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 8. Поисковые запросы
+-- 9. Поисковые запросы
 CREATE TABLE search_logs (
     id SERIAL PRIMARY KEY,
     user_id BIGINT,
@@ -98,7 +111,7 @@ CREATE TABLE search_logs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 9. Сотрудники
+-- 10. Сотрудники
 CREATE TYPE user_role AS ENUM ('bot_admin', 'museum_admin', 'content_manager', 'analyst');
 
 CREATE TABLE staff (
