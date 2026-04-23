@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -123,14 +122,6 @@ func showMuseumManage(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	}
 	if role == RoleBotAdmin {
 		kb.AddRow().AddCallback("🗑 Удалить музей", schemes.NEGATIVE, fmt.Sprintf("adm:del_mus:%d", museumId))
-	}
-
-	// AI / Интерактивный музей
-	kb.AddRow().AddCallback("🤖 Обучить модель AI", schemes.POSITIVE, fmt.Sprintf("adm:train_model:%d", museumId))
-	if webURL, ok := getMuseumWebAppURL(museumId); ok {
-		kb.AddRow().AddOpenApp("🔬 Открыть интерактивный музей", webURL, strconv.FormatInt(museumId, 10), 0)
-	} else {
-		kb.AddRow().AddCallback("🔬 Настроить WEB_APP_URL", schemes.DEFAULT, "adm:webapp_help")
 	}
 
 	// Кнопки добавления

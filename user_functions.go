@@ -109,7 +109,7 @@ func showEvents(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId
 	rows, err := pool.Query(ctx, `
 		SELECT e.id, e.title, e.event_date, e.price, COALESCE(m.short_name, m.name)
 		FROM events e JOIN museums m ON e.museum_id=m.id
-		WHERE e.is_active=true AND e.event_date::date >= CURRENT_DATE ORDER BY e.event_date LIMIT 10`)
+		WHERE e.is_active=true AND e.event_date::date >= (NOW() AT TIME ZONE 'Europe/Moscow')::date ORDER BY e.event_date LIMIT 10`)
 	if err != nil {
 		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText("❌ Ошибка."))
 		return
@@ -150,7 +150,7 @@ func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 		SELECT e.title, COALESCE(e.description,''), e.event_date, e.duration_hours,
 		       e.max_participants, e.current_participants, e.price, COALESCE(m.short_name,m.name)
 		FROM events e JOIN museums m ON e.museum_id=m.id
-		WHERE e.id=$1 AND e.is_active=true AND e.event_date::date >= CURRENT_DATE`, eventId).
+		WHERE e.id=$1 AND e.is_active=true AND e.event_date::date >= (NOW() AT TIME ZONE 'Europe/Moscow')::date`, eventId).
 		Scan(&title, &desc, &eventDate, &duration, &maxPart, &curPart, &price, &museum)
 	if err != nil {
 		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)
@@ -187,7 +187,7 @@ func showEventDetails(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 
 func registerForEvent(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, eventId int64, cbId string) {
 	var eventExists int
-	pool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE id=$1 AND is_active=true AND event_date::date >= CURRENT_DATE", eventId).Scan(&eventExists)
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM events WHERE id=$1 AND is_active=true AND event_date::date >= (NOW() AT TIME ZONE 'Europe/Moscow')::date", eventId).Scan(&eventExists)
 	if eventExists == 0 {
 		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие недоступно.", nil)
 		return
@@ -222,7 +222,7 @@ func confirmEventRegistration(ctx context.Context, api *maxbot.Api, pool *pgxpoo
 	var maxPart, curPart int
 	var title string
 	var eventDate time.Time
-	err := pool.QueryRow(ctx, "SELECT title, event_date, max_participants, current_participants FROM events WHERE id=$1 AND is_active=true AND event_date::date >= CURRENT_DATE", eventId).
+	err := pool.QueryRow(ctx, "SELECT title, event_date, max_participants, current_participants FROM events WHERE id=$1 AND is_active=true AND event_date::date >= (NOW() AT TIME ZONE 'Europe/Moscow')::date", eventId).
 		Scan(&title, &eventDate, &maxPart, &curPart)
 	if err != nil {
 		answerCb(ctx, api, chatId, cbId, "❌ Мероприятие не найдено.", nil)

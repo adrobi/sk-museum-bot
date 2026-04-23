@@ -262,7 +262,7 @@ func ensureMainAdminFromEnv(ctx context.Context, pool *pgxpool.Pool) {
 func startEventLoop(ctx context.Context, pool *pgxpool.Pool, api *maxbot.Api) {
 	run := func() {
 		if _, err := pool.Exec(ctx,
-			"UPDATE events SET is_active=false WHERE is_active=true AND event_date::date < CURRENT_DATE"); err != nil {
+			"UPDATE events SET is_active=false WHERE is_active=true AND event_date::date < (NOW() AT TIME ZONE 'Europe/Moscow')::date"); err != nil {
 			log.Printf("event loop: deactivate past events error: %v", err)
 		}
 
@@ -272,8 +272,8 @@ func startEventLoop(ctx context.Context, pool *pgxpool.Pool, api *maxbot.Api) {
 			JOIN events e ON e.id=er.event_id
 			WHERE er.reminded=false
 			  AND e.is_active=true
-			  AND e.event_date::date >= CURRENT_DATE
-			  AND NOW() >= (e.event_date - make_interval(hours => er.remind_hours))`)
+			  AND e.event_date::date >= (NOW() AT TIME ZONE 'Europe/Moscow')::date
+			  AND (NOW() AT TIME ZONE 'Europe/Moscow') >= (e.event_date - make_interval(hours => er.remind_hours))`)
 		if err != nil {
 			log.Printf("event loop: reminder query error: %v", err)
 			return
@@ -809,6 +809,8 @@ func handleCallback(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, up
 		kb := api.Messages.NewKeyboardBuilder()
 		kb.AddRow().AddCallback("❌ Отмена", schemes.NEGATIVE, "main")
 		answerCb(ctx, api, chatId, cbId, "💬 Напишите отзыв о музее\n━━━━━━━━━━━━━━━━━━━━\n\nОтправьте текст", kb)
+	case "del_review":
+		handleDeleteReview(ctx, api, pool, chatId, userId, id, cbId)
 	case "add_exh_mus":
 		setUserState(userId, "awaiting_exhibition_data", fmt.Sprintf("%d", id))
 		kb := api.Messages.NewKeyboardBuilder()

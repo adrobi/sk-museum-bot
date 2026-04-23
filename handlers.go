@@ -272,10 +272,23 @@ func handleReviewText(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, 
 	if len(comment) > 1000 {
 		comment = comment[:1000]
 	}
-	pool.Exec(ctx, "UPDATE reviews SET comment=$1 WHERE museum_id=$2 AND user_id=$3", comment, museumId, userId)
+	tag, err := pool.Exec(ctx, "UPDATE reviews SET comment=$1 WHERE museum_id=$2 AND user_id=$3", comment, museumId, userId)
+	if err != nil {
+		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).SetText("❌ Ошибка сохранения отзыва."))
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		clearUserState(userId)
+		kb := api.Messages.NewKeyboardBuilder()
+		kb.AddRow().AddCallback("⭐ Оценить музей", schemes.POSITIVE, fmt.Sprintf("rate_menu:%d", museumId))
+		kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("view_mus:%d", museumId))
+		_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText("ℹ️ Сначала поставьте оценку музею, потом можно добавить отзыв."))
+		return
+	}
 	clearUserState(userId)
 	kb := api.Messages.NewKeyboardBuilder()
 	kb.AddRow().AddCallback("🏛 К музею", schemes.POSITIVE, fmt.Sprintf("view_mus:%d", museumId))
+	kb.AddRow().AddCallback("🗑 Удалить отзыв", schemes.NEGATIVE, fmt.Sprintf("del_review:%d", museumId))
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
 	_ = api.Messages.Send(ctx, maxbot.NewMessage().SetChat(chatId).AddKeyboard(kb).SetText("✅ Отзыв сохранён! Спасибо!"))
 }
@@ -289,9 +302,10 @@ func showRateMenu(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chat
 	var existingComment *string
 	err := pool.QueryRow(ctx, "SELECT rating, comment FROM reviews WHERE museum_id=$1 AND user_id=$2", museumId, userId).
 		Scan(&existingRating, &existingComment)
+	hasReview := err == nil
 	kb := api.Messages.NewKeyboardBuilder()
 	text := "⭐ Оцените музей\n━━━━━━━━━━━━━━━━━━━━\n\n"
-	if err == nil {
+	if hasReview {
 		text += fmt.Sprintf("Ваша оценка: %s%s\n", strings.Repeat("⭐", existingRating), strings.Repeat("☆", 5-existingRating))
 		if existingComment != nil && *existingComment != "" {
 			text += fmt.Sprintf("Ваш отзыв: %s\n", *existingComment)
@@ -303,6 +317,10 @@ func showRateMenu(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chat
 	for i := 1; i <= 5; i++ {
 		kb.AddRow().AddCallback(fmt.Sprintf("%d %s", i, strings.Repeat("⭐", i)), schemes.DEFAULT, fmt.Sprintf("rate_museum:%d:%d", museumId, i))
 	}
+	if hasReview {
+		kb.AddRow().AddCallback("💬 Изменить отзыв", schemes.POSITIVE, fmt.Sprintf("write_review:%d", museumId)).
+			AddCallback("🗑 Удалить отзыв", schemes.NEGATIVE, fmt.Sprintf("del_review:%d", museumId))
+	}
 	kb.AddRow().AddCallback("↩️ Назад к музею", schemes.NEGATIVE, fmt.Sprintf("view_mus:%d", museumId))
 	answerCb(ctx, api, chatId, cbId, text, kb)
 }
@@ -312,27 +330,62 @@ func handleRate(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId
 	if err != nil || rating < 1 || rating > 5 {
 		return
 	}
-	var count int
-	pool.QueryRow(ctx, "SELECT COUNT(*) FROM reviews WHERE museum_id=$1 AND user_id=$2", museumId, userId).Scan(&count)
-	if count > 0 {
-		pool.Exec(ctx, "UPDATE reviews SET rating=$1 WHERE museum_id=$2 AND user_id=$3", rating, museumId, userId)
+	var existed bool
+	if err := pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM reviews WHERE museum_id=$1 AND user_id=$2)", museumId, userId).Scan(&existed); err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка сохранения оценки.", nil)
+		return
+	}
+	if existed {
+		if _, err := pool.Exec(ctx, "UPDATE reviews SET rating=$1 WHERE museum_id=$2 AND user_id=$3", rating, museumId, userId); err != nil {
+			answerCb(ctx, api, chatId, cbId, "❌ Ошибка сохранения оценки.", nil)
+			return
+		}
 	} else {
-		pool.Exec(ctx, "INSERT INTO reviews (museum_id,user_id,rating) VALUES ($1,$2,$3)", museumId, userId, rating)
+		if _, err := pool.Exec(ctx, "INSERT INTO reviews (museum_id,user_id,rating) VALUES ($1,$2,$3)", museumId, userId, rating); err != nil {
+			answerCb(ctx, api, chatId, cbId, "❌ Ошибка сохранения оценки.", nil)
+			return
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM reviews
+		WHERE museum_id=$1 AND user_id=$2
+		  AND id NOT IN (
+			  SELECT id FROM reviews WHERE museum_id=$1 AND user_id=$2 ORDER BY id LIMIT 1
+		  )`, museumId, userId); err != nil {
+		log.Printf("review deduplicate error: %v", err)
 	}
 	filled := strings.Repeat("⭐", rating)
 	empty := strings.Repeat("☆", 5-rating)
 	kb := api.Messages.NewKeyboardBuilder()
-	kb.AddRow().AddCallback("💬 Написать отзыв", schemes.POSITIVE, fmt.Sprintf("write_review:%d", museumId))
+	kb.AddRow().AddCallback("💬 Изменить отзыв", schemes.POSITIVE, fmt.Sprintf("write_review:%d", museumId)).
+		AddCallback("🗑 Удалить отзыв", schemes.NEGATIVE, fmt.Sprintf("del_review:%d", museumId))
 	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("view_mus:%d", museumId))
 	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
 	msg := "🌟 Оценка сохранена!\n━━━━━━━━━━━━━━━━━━━━\n\n"
-	if count > 0 {
+	if existed {
 		msg += "Обновлена: "
 	} else {
 		msg += "Ваша оценка: "
 	}
 	msg += filled + empty + "\n\nХотите оставить отзыв?"
 	answerCb(ctx, api, chatId, cbId, msg, kb)
+}
+
+func handleDeleteReview(ctx context.Context, api *maxbot.Api, pool *pgxpool.Pool, chatId, userId, museumId int64, cbId string) {
+	tag, err := pool.Exec(ctx, "DELETE FROM reviews WHERE museum_id=$1 AND user_id=$2", museumId, userId)
+	if err != nil {
+		answerCb(ctx, api, chatId, cbId, "❌ Ошибка удаления отзыва.", nil)
+		return
+	}
+	kb := api.Messages.NewKeyboardBuilder()
+	kb.AddRow().AddCallback("⭐ Оценить музей", schemes.POSITIVE, fmt.Sprintf("rate_menu:%d", museumId))
+	kb.AddRow().AddCallback("🏛 К музею", schemes.DEFAULT, fmt.Sprintf("view_mus:%d", museumId))
+	kb.AddRow().AddCallback("🏠 Главное меню", schemes.NEGATIVE, "main")
+	if tag.RowsAffected() == 0 {
+		answerCb(ctx, api, chatId, cbId, "ℹ️ У вас нет отзыва для удаления.", kb)
+		return
+	}
+	answerCb(ctx, api, chatId, cbId, "✅ Отзыв удалён.", kb)
 }
 
 // ==========================================

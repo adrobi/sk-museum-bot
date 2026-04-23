@@ -99,7 +99,8 @@ CREATE TABLE reviews (
     user_id BIGINT NOT NULL,
     rating INTEGER CHECK (rating >= 1 AND rating <= 5),
     comment TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (museum_id, user_id)
 );
 
 -- 9. Поисковые запросы
